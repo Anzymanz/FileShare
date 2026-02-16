@@ -285,9 +285,6 @@ class _HomeState extends State<Home>
         shortcutPolicy: ShortcutPolicy.requireCreate,
       );
     } catch (_) {}
-    if (_minimizeToTray) {
-      await _ensureTrayInitialized();
-    }
   }
 
   Future<void> _initFocus() async {
@@ -485,8 +482,16 @@ class _HomeState extends State<Home>
     if (!_minimizeToTray || !Platform.isWindows) return;
     if (_isHiddenToTray) return;
     await _ensureTrayInitialized();
+    // A minimized window can retain a taskbar button until restored/rehidden.
+    try {
+      if (await windowManager.isMinimized()) {
+        await windowManager.restore();
+      }
+    } catch (_) {}
     await windowManager.setSkipTaskbar(true);
     await windowManager.hide();
+    // Re-apply after hide to ensure the taskbar state sticks.
+    await windowManager.setSkipTaskbar(true);
     _isHiddenToTray = true;
     if (notificationTitle != null && notificationBody != null) {
       await _showTrayNotification(notificationTitle, notificationBody);
@@ -502,6 +507,7 @@ class _HomeState extends State<Home>
       await windowManager.restore();
     }
     _isHiddenToTray = false;
+    await _disposeTray();
   }
 
   Future<void> _showTrayNotification(String title, String body) async {
@@ -528,10 +534,7 @@ class _HomeState extends State<Home>
     }
     widget.onMinimizeToTrayChanged(value);
     await windowManager.setPreventClose(value);
-    if (value) {
-      await _ensureTrayInitialized();
-      return;
-    }
+    if (value) return;
     if (_isHiddenToTray) {
       await _restoreFromTray();
     }
