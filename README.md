@@ -27,9 +27,7 @@ FileShare is intended for small, trusted local networks with a limited number of
 
 ## Install
 
-Download the installer from the latest release:
-
-- https://github.com/Anzymanz/FileShare/releases/latest
+Download the installer from the latest release [here](https://github.com/Anzymanz/FileShare/releases/latest)
 
 ## Run From Source
 
