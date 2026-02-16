@@ -178,6 +178,7 @@ class _HomeState extends State<Home>
   bool _isFocused = true;
   int _lastNudge = 0;
   bool _flash = false;
+  bool _soundOnNudge = false;
   bool _showTransferDetails = false;
   Timer? _flashTimer;
   Timer? _windowSaveDebounce;
@@ -215,6 +216,9 @@ class _HomeState extends State<Home>
 
   void _handleNudge() {
     _shakeController.forward(from: 0);
+    if (_soundOnNudge) {
+      _playNudgeSound();
+    }
     _flashTimer?.cancel();
     setState(() => _flash = true);
     _flashTimer = Timer(const Duration(milliseconds: 500), () {
@@ -495,7 +499,7 @@ class _HomeState extends State<Home>
     await showDialog<void>(
       context: context,
       builder: (_) => StatefulBuilder(
-        builder: (context, setState) => AlertDialog(
+        builder: (context, setDialogState) => AlertDialog(
           title: const Text('Network Settings'),
           content: SizedBox(
             width: 480,
@@ -508,6 +512,15 @@ class _HomeState extends State<Home>
                   Text('Name: ${c.deviceName}'),
                   Text('IP: $localIpSummary'),
                   Text('Port: ${c.listenPort}'),
+                  SwitchListTile.adaptive(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Sound on nudge'),
+                    value: _soundOnNudge,
+                    onChanged: (value) {
+                      setDialogState(() => _soundOnNudge = value);
+                    },
+                  ),
                   const SizedBox(height: 8),
                   const Text('Manual Peer Connect'),
                   const SizedBox(height: 6),
@@ -529,10 +542,12 @@ class _HomeState extends State<Home>
                             : () async {
                                 final raw = probeController.text.trim();
                                 if (raw.isEmpty) {
-                                  setState(() => probeStatus = 'Enter an IP');
+                                  setDialogState(
+                                    () => probeStatus = 'Enter an IP',
+                                  );
                                   return;
                                 }
-                                setState(() {
+                                setDialogState(() {
                                   sendingProbe = true;
                                   probeStatus = 'Sending probe...';
                                 });
@@ -541,7 +556,7 @@ class _HomeState extends State<Home>
                                   const Duration(milliseconds: 120),
                                 );
                                 if (!context.mounted) return;
-                                setState(() {
+                                setDialogState(() {
                                   sendingProbe = false;
                                   probeStatus = ok
                                       ? 'Probe sent to $raw'
@@ -564,12 +579,12 @@ class _HomeState extends State<Home>
                         onPressed: () async {
                           final raw = probeController.text.trim();
                           if (raw.isEmpty) {
-                            setState(() => connectStatus = 'Enter an IP');
+                            setDialogState(() => connectStatus = 'Enter an IP');
                             return;
                           }
-                          setState(() => connectStatus = 'Connecting...');
+                          setDialogState(() => connectStatus = 'Connecting...');
                           final result = await c.addPeerByAddress(raw);
-                          setState(() => connectStatus = result);
+                          setDialogState(() => connectStatus = result);
                         },
                         child: const Text('Connect TCP'),
                       ),
@@ -778,6 +793,13 @@ Future<void> _flashTaskbar() async {
   info.ref.dwTimeout = 0;
   _flashWindowEx(info);
   calloc.free(info);
+}
+
+void _playNudgeSound() {
+  if (!Platform.isWindows) {
+    return;
+  }
+  win32.Beep(880, 120);
 }
 
 class _ExplorerGrid extends StatelessWidget {

@@ -19,6 +19,7 @@ All notable changes to this project are tracked here.
 - Theme presets selectable from the settings menu (Slate, Forest, Amber, Rose), applied to both light and dark modes.
 - Hover readout for connected clients count (number-only) next to the settings cog.
 - Subtle horizontal shake animation on nudge events for stronger visual feedback.
+- Optional sound feedback on nudge, configurable via `Sound on nudge` toggle in Network Settings.
 
 ### Changed
 - Reduced discovery/refresh polling intervals to lower sync latency.
