@@ -53,6 +53,8 @@ All notable changes to this project are tracked here.
 - Removed automatic close->quit inference from window close events; app quit now only occurs on explicit quit actions, preventing minimize-triggered close callbacks from terminating the process.
 - Removed tray `Exit` menu action to eliminate any chance of unintended quit from tray callbacks during minimize-to-tray transitions.
 - Reworked the Windows window-management stack to `window_manager` only (removed `bitsdojo_window` usage and native runner hook) to stabilize minimize-to-tray behavior.
+- Tray context menu now includes explicit right-click actions: `Restore FileShare` and `Exit FileShare`.
+- Removed close-to-tray behavior; tray is now used only for minimize-to-tray, while close actions always quit the app.
 
 ### Fixed
 - Fixed one-way visibility and stale peer pruning behavior.

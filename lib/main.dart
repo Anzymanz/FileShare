@@ -410,14 +410,17 @@ class _HomeState extends State<Home>
   void onWindowClose() {
     unawaited(_saveWindowNow());
     if (_isQuitting) return;
-    if (_minimizeToTray) {
-      unawaited(
-        _hideToTray(
-          notificationTitle: 'FileShare',
-          notificationBody: 'Still running in the system tray.',
-        ),
-      );
-    }
+    unawaited(_handleNativeCloseSignal());
+  }
+
+  Future<void> _handleNativeCloseSignal() async {
+    // Defensive guard: ignore close events emitted while minimizing.
+    try {
+      if (await windowManager.isMinimized()) {
+        return;
+      }
+    } catch (_) {}
+    await _quitApplication();
   }
 
   void _scheduleWindowSave({bool immediate = false}) {
@@ -460,7 +463,11 @@ class _HomeState extends State<Home>
     await tray.trayManager.setToolTip('FileShare');
     await tray.trayManager.setContextMenu(
       tray.Menu(
-        items: [tray.MenuItem(key: 'show_window', label: 'Show FileShare')],
+        items: [
+          tray.MenuItem(key: 'show_window', label: 'Restore FileShare'),
+          tray.MenuItem.separator(),
+          tray.MenuItem(key: 'exit_app', label: 'Exit FileShare'),
+        ],
       ),
     );
     _trayInitialized = true;
@@ -570,13 +577,6 @@ class _HomeState extends State<Home>
   }
 
   Future<void> _onClosePressed() async {
-    if (_minimizeToTray) {
-      await _hideToTray(
-        notificationTitle: 'FileShare',
-        notificationBody: 'Still running in the system tray.',
-      );
-      return;
-    }
     await _quitApplication();
   }
 
@@ -590,6 +590,9 @@ class _HomeState extends State<Home>
     switch (menuItem.key) {
       case 'show_window':
         unawaited(_restoreFromTray());
+        break;
+      case 'exit_app':
+        unawaited(_quitApplication());
         break;
       default:
         break;
