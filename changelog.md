@@ -50,6 +50,7 @@ All notable changes to this project are tracked here.
 - Hardened tray minimize flow so minimize cannot terminate the app: close is always explicitly handled, tray hide/restore now use native `bitsdojo` show/hide with guarded fallback.
 - Added a minimize/close guard window to ignore stray close events that occur during minimize, preventing unintended process exit on minimize.
 - Replaced plugin caption controls with custom Flutter titlebar buttons (`-`, maximize, `x`) so minimize always executes the app-managed minimize/tray code path.
+- Removed automatic close->quit inference from window close events; app quit now only occurs on explicit quit actions, preventing minimize-triggered close callbacks from terminating the process.
 
 ### Fixed
 - Fixed one-way visibility and stale peer pruning behavior.
