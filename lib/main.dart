@@ -6,6 +6,7 @@ import 'dart:math';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'package:audioplayers/audioplayers.dart';
 import 'package:bitsdojo_window/bitsdojo_window.dart';
 import 'package:ffi/ffi.dart';
 import 'package:file_selector/file_selector.dart' as fs;
@@ -183,6 +184,7 @@ class Home extends StatefulWidget {
 class _HomeState extends State<Home>
     with WindowListener, SingleTickerProviderStateMixin {
   final c = Controller();
+  late final AudioPlayer _nudgeAudioPlayer;
   bool over = false;
   bool _isFocused = true;
   int _lastNudge = 0;
@@ -197,6 +199,7 @@ class _HomeState extends State<Home>
   @override
   void initState() {
     super.initState();
+    _nudgeAudioPlayer = AudioPlayer()..setReleaseMode(ReleaseMode.stop);
     _shakeController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 360),
@@ -331,10 +334,20 @@ class _HomeState extends State<Home>
     } catch (_) {}
   }
 
+  void _playNudgeSound() {
+    unawaited(() async {
+      try {
+        await _nudgeAudioPlayer.stop();
+        await _nudgeAudioPlayer.play(AssetSource('nudge.mp3'));
+      } catch (_) {}
+    }());
+  }
+
   @override
   void dispose() {
     c.removeListener(_changed);
     c.dispose();
+    unawaited(_nudgeAudioPlayer.dispose());
     windowManager.removeListener(this);
     _flashTimer?.cancel();
     _windowSaveDebounce?.cancel();
@@ -842,13 +855,6 @@ Future<void> _flashTaskbar() async {
   info.ref.dwTimeout = 0;
   _flashWindowEx(info);
   calloc.free(info);
-}
-
-void _playNudgeSound() {
-  if (!Platform.isWindows) {
-    return;
-  }
-  win32.Beep(880, 120);
 }
 
 class _ExplorerGrid extends StatelessWidget {
