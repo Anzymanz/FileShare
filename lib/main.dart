@@ -679,9 +679,13 @@ class _HomeState extends State<Home>
                               dark: widget.dark,
                               themeIndex: widget.themeIndex,
                               connectedCount: c.connectedPeerCount,
+                              minimizeToTray: _minimizeToTray,
                               onToggleTheme: widget.onToggleTheme,
                               onSelectTheme: widget.onSelectTheme,
                               onShowSettings: _showSettings,
+                              onToggleMinimizeToTray: () {
+                                unawaited(_setMinimizeToTray(!_minimizeToTray));
+                              },
                               onMinimizePressed: _onMinimizePressed,
                               onClosePressed: _onClosePressed,
                               showMoveArea: false,
@@ -692,9 +696,15 @@ class _HomeState extends State<Home>
                                 dark: widget.dark,
                                 themeIndex: widget.themeIndex,
                                 connectedCount: c.connectedPeerCount,
+                                minimizeToTray: _minimizeToTray,
                                 onToggleTheme: widget.onToggleTheme,
                                 onSelectTheme: widget.onSelectTheme,
                                 onShowSettings: _showSettings,
+                                onToggleMinimizeToTray: () {
+                                  unawaited(
+                                    _setMinimizeToTray(!_minimizeToTray),
+                                  );
+                                },
                                 onMinimizePressed: _onMinimizePressed,
                                 onClosePressed: _onClosePressed,
                                 showMoveArea: true,
@@ -793,20 +803,6 @@ class _HomeState extends State<Home>
                     onChanged: (value) {
                       setDialogState(() => _soundOnNudge = value);
                       widget.onSoundOnNudgeChanged(value);
-                    },
-                  ),
-                  SwitchListTile.adaptive(
-                    dense: true,
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text('Minimize to tray'),
-                    subtitle: const Text(
-                      'Close/minimize keeps FileShare in tray',
-                    ),
-                    value: _minimizeToTray,
-                    onChanged: (value) async {
-                      await _setMinimizeToTray(value);
-                      if (!context.mounted) return;
-                      setDialogState(() {});
                     },
                   ),
                   const SizedBox(height: 8),
@@ -908,17 +904,21 @@ class _SettingsButton extends StatefulWidget {
     required this.dark,
     required this.themeIndex,
     required this.connectedCount,
+    required this.minimizeToTray,
     required this.onToggleTheme,
     required this.onSelectTheme,
     required this.onShowSettings,
+    required this.onToggleMinimizeToTray,
   });
 
   final bool dark;
   final int themeIndex;
   final int connectedCount;
+  final bool minimizeToTray;
   final VoidCallback onToggleTheme;
   final ValueChanged<int> onSelectTheme;
   final VoidCallback onShowSettings;
+  final VoidCallback onToggleMinimizeToTray;
 
   @override
   State<_SettingsButton> createState() => _SettingsButtonState();
@@ -1005,6 +1005,7 @@ class _SettingsButtonState extends State<_SettingsButton> {
               if (v == 1) widget.onToggleTheme();
               if (v == 2) widget.onShowSettings();
               if (v == 3) unawaited(_showThemesWindow(context));
+              if (v == 4) widget.onToggleMinimizeToTray();
             },
             itemBuilder: (_) => [
               PopupMenuItem(
@@ -1015,6 +1016,11 @@ class _SettingsButtonState extends State<_SettingsButton> {
               ),
               const PopupMenuItem(value: 2, child: Text('Network settings')),
               const PopupMenuItem(value: 3, child: Text('Themes...')),
+              CheckedPopupMenuItem(
+                value: 4,
+                checked: widget.minimizeToTray,
+                child: const Text('Minimize to tray'),
+              ),
             ],
           ),
         ],
@@ -1028,9 +1034,11 @@ class _TitleBarContent extends StatelessWidget {
     required this.dark,
     required this.themeIndex,
     required this.connectedCount,
+    required this.minimizeToTray,
     required this.onToggleTheme,
     required this.onSelectTheme,
     required this.onShowSettings,
+    required this.onToggleMinimizeToTray,
     required this.onMinimizePressed,
     required this.onClosePressed,
     required this.showMoveArea,
@@ -1040,9 +1048,11 @@ class _TitleBarContent extends StatelessWidget {
   final bool dark;
   final int themeIndex;
   final int connectedCount;
+  final bool minimizeToTray;
   final VoidCallback onToggleTheme;
   final ValueChanged<int> onSelectTheme;
   final VoidCallback onShowSettings;
+  final VoidCallback onToggleMinimizeToTray;
   final Future<void> Function() onMinimizePressed;
   final Future<void> Function() onClosePressed;
   final bool showMoveArea;
@@ -1058,9 +1068,11 @@ class _TitleBarContent extends StatelessWidget {
           dark: dark,
           themeIndex: themeIndex,
           connectedCount: connectedCount,
+          minimizeToTray: minimizeToTray,
           onToggleTheme: onToggleTheme,
           onSelectTheme: onSelectTheme,
           onShowSettings: onShowSettings,
+          onToggleMinimizeToTray: onToggleMinimizeToTray,
         ),
         const SizedBox(width: 8),
         if (showWindowButtons)
