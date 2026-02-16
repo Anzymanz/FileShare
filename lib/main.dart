@@ -554,7 +554,7 @@ class _HomeState extends State<Home>
       await _hideToTray();
       return;
     }
-    await windowManager.minimize();
+    appWindow.minimize();
   }
 
   Future<void> _onClosePressed() async {

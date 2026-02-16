@@ -46,6 +46,7 @@ All notable changes to this project are tracked here.
 - Tray icon visibility now matches tray state: it is created only while hidden to tray and removed again on restore.
 - Custom titlebar minimize/close buttons now route through tray-aware handlers so `Minimize to tray` is applied consistently.
 - Moved `Minimize to tray` control out of Network Settings and into the main settings cog popup as a checked menu toggle.
+- Fixed minimize regression by using `bitsdojo` native minimize (`appWindow.minimize()`) for non-tray minimize in the custom titlebar flow.
 
 ### Fixed
 - Fixed one-way visibility and stale peer pruning behavior.
