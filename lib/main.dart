@@ -7,7 +7,6 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:audioplayers/audioplayers.dart';
-import 'package:bitsdojo_window/bitsdojo_window.dart';
 import 'package:ffi/ffi.dart';
 import 'package:file_selector/file_selector.dart' as fs;
 import 'package:flutter/material.dart';
@@ -93,21 +92,25 @@ Future<void> main() async {
   final savedWindowState = await _loadWindowState();
   final savedAppSettings = await _loadAppSettings();
 
-  runApp(MyApp(initialSettings: savedAppSettings));
+  await windowManager.waitUntilReadyToShow(
+    const WindowOptions(
+      minimumSize: _minWindowSize,
+      titleBarStyle: TitleBarStyle.hidden,
+      windowButtonVisibility: false,
+    ),
+  );
 
-  doWhenWindowReady(() {
-    unawaited(_restoreWindow(savedWindowState));
-  });
+  runApp(MyApp(initialSettings: savedAppSettings));
+  unawaited(_restoreWindow(savedWindowState));
 }
 
 Future<void> _restoreWindow(_WindowState? saved) async {
-  appWindow.minSize = _minWindowSize;
   await windowManager.setMinimumSize(_minWindowSize);
 
   if (saved == null) {
     await windowManager.setSize(_defaultWindowSize);
-    await windowManager.setAlignment(Alignment.center);
-    appWindow.show();
+    await windowManager.center();
+    await windowManager.show();
     return;
   }
 
@@ -116,7 +119,7 @@ Future<void> _restoreWindow(_WindowState? saved) async {
   await windowManager.setBounds(
     Rect.fromLTWH(saved.left, saved.top, width, height),
   );
-  appWindow.show();
+  await windowManager.show();
 
   if (saved.maximized) {
     await windowManager.maximize();
@@ -482,10 +485,10 @@ class _HomeState extends State<Home>
       await _ensureTrayInitialized();
       // A minimized window can retain a taskbar button until restored/rehidden.
       if (await windowManager.isMinimized()) {
-        appWindow.restore();
+        await windowManager.restore();
       }
       await windowManager.setSkipTaskbar(true);
-      appWindow.hide();
+      await windowManager.hide();
       // Re-apply after hide to ensure the taskbar state sticks.
       await windowManager.setSkipTaskbar(true);
       _isHiddenToTray = true;
@@ -494,7 +497,7 @@ class _HomeState extends State<Home>
       }
     } catch (_) {
       // Never let tray minimize failure terminate the app.
-      appWindow.minimize();
+      await windowManager.minimize();
     }
   }
 
@@ -502,8 +505,10 @@ class _HomeState extends State<Home>
     if (!_isHiddenToTray) return;
     try {
       await windowManager.setSkipTaskbar(false);
-      appWindow.show();
-      appWindow.restore();
+      await windowManager.show();
+      if (await windowManager.isMinimized()) {
+        await windowManager.restore();
+      }
       await windowManager.focus();
       _isHiddenToTray = false;
       await _disposeTray();
@@ -553,22 +558,14 @@ class _HomeState extends State<Home>
       await _hideToTray();
       return;
     }
-    try {
-      await windowManager.minimize();
-    } catch (_) {
-      appWindow.minimize();
-    }
+    await windowManager.minimize();
   }
 
   Future<void> _onMaximizePressed() async {
-    try {
-      if (await windowManager.isMaximized()) {
-        await windowManager.unmaximize();
-      } else {
-        await windowManager.maximize();
-      }
-    } catch (_) {
-      appWindow.maximizeOrRestore();
+    if (await windowManager.isMaximized()) {
+      await windowManager.unmaximize();
+    } else {
+      await windowManager.maximize();
     }
   }
 
@@ -686,45 +683,23 @@ class _HomeState extends State<Home>
                       left: 0,
                       right: 0,
                       height: 40,
-                      child: _isTest
-                          ? _TitleBarContent(
-                              dark: widget.dark,
-                              themeIndex: widget.themeIndex,
-                              connectedCount: c.connectedPeerCount,
-                              minimizeToTray: _minimizeToTray,
-                              onToggleTheme: widget.onToggleTheme,
-                              onSelectTheme: widget.onSelectTheme,
-                              onShowSettings: _showSettings,
-                              onToggleMinimizeToTray: () {
-                                unawaited(_setMinimizeToTray(!_minimizeToTray));
-                              },
-                              onMinimizePressed: _onMinimizePressed,
-                              onMaximizePressed: _onMaximizePressed,
-                              onClosePressed: _onClosePressed,
-                              showMoveArea: false,
-                              showWindowButtons: false,
-                            )
-                          : WindowTitleBarBox(
-                              child: _TitleBarContent(
-                                dark: widget.dark,
-                                themeIndex: widget.themeIndex,
-                                connectedCount: c.connectedPeerCount,
-                                minimizeToTray: _minimizeToTray,
-                                onToggleTheme: widget.onToggleTheme,
-                                onSelectTheme: widget.onSelectTheme,
-                                onShowSettings: _showSettings,
-                                onToggleMinimizeToTray: () {
-                                  unawaited(
-                                    _setMinimizeToTray(!_minimizeToTray),
-                                  );
-                                },
-                                onMinimizePressed: _onMinimizePressed,
-                                onMaximizePressed: _onMaximizePressed,
-                                onClosePressed: _onClosePressed,
-                                showMoveArea: true,
-                                showWindowButtons: true,
-                              ),
-                            ),
+                      child: _TitleBarContent(
+                        dark: widget.dark,
+                        themeIndex: widget.themeIndex,
+                        connectedCount: c.connectedPeerCount,
+                        minimizeToTray: _minimizeToTray,
+                        onToggleTheme: widget.onToggleTheme,
+                        onSelectTheme: widget.onSelectTheme,
+                        onShowSettings: _showSettings,
+                        onToggleMinimizeToTray: () {
+                          unawaited(_setMinimizeToTray(!_minimizeToTray));
+                        },
+                        onMinimizePressed: _onMinimizePressed,
+                        onMaximizePressed: _onMaximizePressed,
+                        onClosePressed: _onClosePressed,
+                        showMoveArea: !_isTest,
+                        showWindowButtons: !_isTest,
+                      ),
                     ),
                     Positioned.fill(
                       child: Padding(
@@ -1079,7 +1054,11 @@ class _TitleBarContent extends StatelessWidget {
     return Row(
       children: [
         const SizedBox(width: 8),
-        Expanded(child: showMoveArea ? MoveWindow() : const SizedBox()),
+        Expanded(
+          child: showMoveArea
+              ? const DragToMoveArea(child: SizedBox.expand())
+              : const SizedBox(),
+        ),
         _SettingsButton(
           dark: dark,
           themeIndex: themeIndex,
