@@ -33,6 +33,8 @@ All notable changes to this project are tracked here.
 - Probe action feedback improved with explicit `Sending...`, success, and invalid-IP states.
 - UDP presence handling now avoids unnecessary full-UI refreshes when heartbeat packets contain no meaningful peer changes.
 - Nudge sound now plays `assets/nudge.mp3` instead of the generated system beep.
+- Transfer panel always shows full details (removed `More details` toggle).
+- Finished transfer readouts now auto-dismiss after approximately 5 seconds.
 
 ### Fixed
 - Fixed one-way visibility and stale peer pruning behavior.

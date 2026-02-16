@@ -190,7 +190,6 @@ class _HomeState extends State<Home>
   int _lastNudge = 0;
   bool _flash = false;
   bool _soundOnNudge = false;
-  bool _showTransferDetails = false;
   Timer? _flashTimer;
   Timer? _windowSaveDebounce;
   late final AnimationController _shakeController;
@@ -490,12 +489,6 @@ class _HomeState extends State<Home>
                       bottom: 16,
                       child: _TransferPanel(
                         transfers: c.transfers,
-                        expanded: _showTransferDetails,
-                        onToggleExpanded: () {
-                          setState(
-                            () => _showTransferDetails = !_showTransferDetails,
-                          );
-                        },
                         onClearFinished: c.clearFinishedTransfers,
                       ),
                     ),
@@ -1079,14 +1072,10 @@ class _IconTileState extends State<_IconTile> {
 class _TransferPanel extends StatelessWidget {
   const _TransferPanel({
     required this.transfers,
-    required this.expanded,
-    required this.onToggleExpanded,
     required this.onClearFinished,
   });
 
   final List<TransferEntry> transfers;
-  final bool expanded;
-  final VoidCallback onToggleExpanded;
   final VoidCallback onClearFinished;
 
   @override
@@ -1136,26 +1125,20 @@ class _TransferPanel extends StatelessWidget {
                         onPressed: onClearFinished,
                         child: const Text('Clear'),
                       ),
-                    TextButton(
-                      onPressed: onToggleExpanded,
-                      child: Text(expanded ? 'Hide details' : 'More details'),
-                    ),
                   ],
                 ),
-                if (expanded) ...[
-                  const SizedBox(height: 4),
-                  ConstrainedBox(
-                    constraints: const BoxConstraints(maxHeight: 260),
-                    child: ListView.separated(
-                      shrinkWrap: true,
-                      itemCount: transfers.length,
-                      separatorBuilder: (_, __) => const SizedBox(height: 8),
-                      itemBuilder: (context, index) {
-                        return _TransferRow(transfer: transfers[index]);
-                      },
-                    ),
+                const SizedBox(height: 4),
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 260),
+                  child: ListView.separated(
+                    shrinkWrap: true,
+                    itemCount: transfers.length,
+                    separatorBuilder: (_, __) => const SizedBox(height: 8),
+                    itemBuilder: (context, index) {
+                      return _TransferRow(transfer: transfers[index]);
+                    },
                   ),
-                ],
+                ),
               ],
             ),
           ),
@@ -1367,6 +1350,7 @@ class Controller extends ChangeNotifier {
   final Map<String, String> peerStatus = {};
   final Map<String, DateTime> _lastNudgeFrom = {};
   final Map<String, TransferEntry> _transfers = {};
+  final Map<String, Timer> _transferDismissTimers = {};
   int _transferCounter = 0;
   DateTime _lastTransferNotify = DateTime.fromMillisecondsSinceEpoch(0);
 
@@ -1465,6 +1449,10 @@ class Controller extends ChangeNotifier {
     _announce?.cancel();
     _refresh?.cancel();
     _prune?.cancel();
+    for (final timer in _transferDismissTimers.values) {
+      timer.cancel();
+    }
+    _transferDismissTimers.clear();
     _udp?.close();
     _tcp?.close();
     super.dispose();
@@ -1714,6 +1702,7 @@ class Controller extends ChangeNotifier {
     if (ids.isEmpty) return;
     for (final id in ids) {
       _transfers.remove(id);
+      _transferDismissTimers.remove(id)?.cancel();
     }
     notifyListeners();
   }
@@ -2143,8 +2132,23 @@ class Controller extends ChangeNotifier {
     if (entry == null) return;
     if (entry.state != TransferState.running) return;
     entry.complete(state: state, error: error);
+    _scheduleTransferAutoDismiss(id);
     _trimTransferHistory();
     _notifyTransferListeners(force: true);
+  }
+
+  void _scheduleTransferAutoDismiss(String id) {
+    _transferDismissTimers.remove(id)?.cancel();
+    _transferDismissTimers[id] = Timer(const Duration(seconds: 5), () {
+      final entry = _transfers[id];
+      if (entry == null || entry.state == TransferState.running) {
+        _transferDismissTimers.remove(id);
+        return;
+      }
+      _transfers.remove(id);
+      _transferDismissTimers.remove(id);
+      _notifyTransferListeners(force: true);
+    });
   }
 
   void _notifyTransferListeners({bool force = false}) {
@@ -2168,7 +2172,9 @@ class Controller extends ChangeNotifier {
           ..sort((a, b) => a.updatedAt.compareTo(b.updatedAt));
     final removeCount = _transfers.length - maxTransfers;
     for (var i = 0; i < min(removeCount, finished.length); i++) {
-      _transfers.remove(finished[i].id);
+      final id = finished[i].id;
+      _transfers.remove(id);
+      _transferDismissTimers.remove(id)?.cancel();
     }
   }
 
