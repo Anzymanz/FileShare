@@ -400,14 +400,16 @@ class _HomeState extends State<Home> with WindowListener {
                   child: Padding(
                     padding: const EdgeInsets.fromLTRB(16, 56, 16, 16),
                     child: c.items.isEmpty
-                        ? Center(
-                            child: Text(
-                              over
-                                  ? 'Drop to share'
-                                  : 'Drop files or folders here',
-                              style: Theme.of(context).textTheme.titleMedium,
-                            ),
-                          )
+                        ? (over
+                              ? Center(
+                                  child: Text(
+                                    'Drop to share',
+                                    style: Theme.of(
+                                      context,
+                                    ).textTheme.titleMedium,
+                                  ),
+                                )
+                              : const SizedBox.shrink())
                         : _ExplorerGrid(
                             items: c.items,
                             buildDragItem: c.buildDragItem,
