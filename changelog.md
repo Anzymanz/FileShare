@@ -25,6 +25,7 @@ All notable changes to this project are tracked here.
 - Updated settings cog to proper inactive/hover/pressed behavior and smaller size.
 - Reduced minimum window size so the window can be resized smaller.
 - Empty-state drop hint now appears only while dragging over the window and only when no items are present.
+- Probe action feedback improved with explicit `Sending...`, success, and invalid-IP states.
 
 ### Fixed
 - Fixed one-way visibility and stale peer pruning behavior.

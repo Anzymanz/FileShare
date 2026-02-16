@@ -464,6 +464,7 @@ class _HomeState extends State<Home> with WindowListener {
         : c.localIps.join(', ');
     final probeController = TextEditingController();
     String? probeStatus;
+    bool sendingProbe = false;
     String? connectStatus;
     await showDialog<void>(
       context: context,
@@ -497,16 +498,31 @@ class _HomeState extends State<Home> with WindowListener {
                       ),
                       const SizedBox(width: 8),
                       TextButton(
-                        onPressed: () {
-                          final raw = probeController.text.trim();
-                          if (raw.isEmpty) {
-                            setState(() => probeStatus = 'Enter an IP');
-                            return;
-                          }
-                          c.sendProbe(raw);
-                          setState(() => probeStatus = 'Probe sent to $raw');
-                        },
-                        child: const Text('Send Probe'),
+                        onPressed: sendingProbe
+                            ? null
+                            : () async {
+                                final raw = probeController.text.trim();
+                                if (raw.isEmpty) {
+                                  setState(() => probeStatus = 'Enter an IP');
+                                  return;
+                                }
+                                setState(() {
+                                  sendingProbe = true;
+                                  probeStatus = 'Sending probe...';
+                                });
+                                final ok = c.sendProbe(raw);
+                                await Future<void>.delayed(
+                                  const Duration(milliseconds: 120),
+                                );
+                                if (!context.mounted) return;
+                                setState(() {
+                                  sendingProbe = false;
+                                  probeStatus = ok
+                                      ? 'Probe sent to $raw'
+                                      : 'Invalid IP address';
+                                });
+                              },
+                        child: Text(sendingProbe ? 'Sending...' : 'Send Probe'),
                       ),
                     ],
                   ),
@@ -1364,9 +1380,9 @@ class Controller extends ChangeNotifier {
     }
   }
 
-  void sendProbe(String raw) {
+  bool sendProbe(String raw) {
     final u = _udp;
-    if (u == null) return;
+    if (u == null) return false;
     var host = raw.trim();
     var port = _discoveryPort;
     if (host.contains(':')) {
@@ -1383,7 +1399,7 @@ class Controller extends ChangeNotifier {
     try {
       addr = InternetAddress(host);
     } catch (_) {
-      return;
+      return false;
     }
     final payload = jsonEncode({
       'tag': _tag,
@@ -1394,6 +1410,7 @@ class Controller extends ChangeNotifier {
       'revision': revision,
     });
     u.send(utf8.encode(payload), addr, port);
+    return true;
   }
 
   Future<String> addPeerByAddress(String raw) async {
