@@ -61,6 +61,20 @@ final class _FLASHWINFO extends ffi.Struct {
 const int _flashTray = 0x00000002;
 const int _flashTimerNoFg = 0x0000000C;
 
+class _ThemePreset {
+  const _ThemePreset({required this.name, required this.seed});
+
+  final String name;
+  final Color seed;
+}
+
+const List<_ThemePreset> _themePresets = [
+  _ThemePreset(name: 'Slate', seed: Color(0xFF4A5D73)),
+  _ThemePreset(name: 'Forest', seed: Color(0xFF2F6B4F)),
+  _ThemePreset(name: 'Amber', seed: Color(0xFF8A5A15)),
+  _ThemePreset(name: 'Rose', seed: Color(0xFF7A3D4F)),
+];
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await windowManager.ensureInitialized();
@@ -105,24 +119,53 @@ class MyApp extends StatefulWidget {
 
 class _MyAppState extends State<MyApp> {
   bool dark = true;
+  int themeIndex = 0;
 
   @override
   Widget build(BuildContext context) {
+    final preset = _themePresets[themeIndex];
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       themeMode: dark ? ThemeMode.dark : ThemeMode.light,
-      theme: ThemeData(brightness: Brightness.light),
-      darkTheme: ThemeData(brightness: Brightness.dark),
-      home: Home(dark: dark, onToggleTheme: () => setState(() => dark = !dark)),
+      theme: ThemeData(
+        brightness: Brightness.light,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: preset.seed,
+          brightness: Brightness.light,
+        ),
+        useMaterial3: true,
+      ),
+      darkTheme: ThemeData(
+        brightness: Brightness.dark,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: preset.seed,
+          brightness: Brightness.dark,
+        ),
+        useMaterial3: true,
+      ),
+      home: Home(
+        dark: dark,
+        themeIndex: themeIndex,
+        onToggleTheme: () => setState(() => dark = !dark),
+        onSelectTheme: (index) => setState(() => themeIndex = index),
+      ),
     );
   }
 }
 
 class Home extends StatefulWidget {
-  const Home({super.key, required this.dark, required this.onToggleTheme});
+  const Home({
+    super.key,
+    required this.dark,
+    required this.themeIndex,
+    required this.onToggleTheme,
+    required this.onSelectTheme,
+  });
 
   final bool dark;
+  final int themeIndex;
   final VoidCallback onToggleTheme;
+  final ValueChanged<int> onSelectTheme;
 
   @override
   State<Home> createState() => _HomeState();
@@ -334,7 +377,9 @@ class _HomeState extends State<Home> with WindowListener {
                   child: _isTest
                       ? _TitleBarContent(
                           dark: widget.dark,
+                          themeIndex: widget.themeIndex,
                           onToggleTheme: widget.onToggleTheme,
+                          onSelectTheme: widget.onSelectTheme,
                           onShowSettings: _showSettings,
                           showMoveArea: false,
                           showWindowButtons: false,
@@ -342,7 +387,9 @@ class _HomeState extends State<Home> with WindowListener {
                       : WindowTitleBarBox(
                           child: _TitleBarContent(
                             dark: widget.dark,
+                            themeIndex: widget.themeIndex,
                             onToggleTheme: widget.onToggleTheme,
+                            onSelectTheme: widget.onSelectTheme,
                             onShowSettings: _showSettings,
                             showMoveArea: true,
                             showWindowButtons: true,
@@ -512,12 +559,16 @@ class _HomeState extends State<Home> with WindowListener {
 class _SettingsButton extends StatelessWidget {
   const _SettingsButton({
     required this.dark,
+    required this.themeIndex,
     required this.onToggleTheme,
+    required this.onSelectTheme,
     required this.onShowSettings,
   });
 
   final bool dark;
+  final int themeIndex;
   final VoidCallback onToggleTheme;
+  final ValueChanged<int> onSelectTheme;
   final VoidCallback onShowSettings;
 
   @override
@@ -534,6 +585,7 @@ class _SettingsButton extends StatelessWidget {
       onSelected: (v) {
         if (v == 1) onToggleTheme();
         if (v == 2) onShowSettings();
+        if (v >= 10) onSelectTheme(v - 10);
       },
       itemBuilder: (_) => [
         PopupMenuItem(
@@ -541,6 +593,13 @@ class _SettingsButton extends StatelessWidget {
           child: Text(dark ? 'Switch to light mode' : 'Switch to dark mode'),
         ),
         const PopupMenuItem(value: 2, child: Text('Network settings')),
+        const PopupMenuDivider(),
+        for (var i = 0; i < _themePresets.length; i++)
+          CheckedPopupMenuItem<int>(
+            value: 10 + i,
+            checked: i == themeIndex,
+            child: Text('Theme: ${_themePresets[i].name}'),
+          ),
       ],
     );
   }
@@ -549,14 +608,18 @@ class _SettingsButton extends StatelessWidget {
 class _TitleBarContent extends StatelessWidget {
   const _TitleBarContent({
     required this.dark,
+    required this.themeIndex,
     required this.onToggleTheme,
+    required this.onSelectTheme,
     required this.onShowSettings,
     required this.showMoveArea,
     required this.showWindowButtons,
   });
 
   final bool dark;
+  final int themeIndex;
   final VoidCallback onToggleTheme;
+  final ValueChanged<int> onSelectTheme;
   final VoidCallback onShowSettings;
   final bool showMoveArea;
   final bool showWindowButtons;
@@ -569,7 +632,9 @@ class _TitleBarContent extends StatelessWidget {
         Expanded(child: showMoveArea ? MoveWindow() : const SizedBox()),
         _SettingsButton(
           dark: dark,
+          themeIndex: themeIndex,
           onToggleTheme: onToggleTheme,
+          onSelectTheme: onSelectTheme,
           onShowSettings: onShowSettings,
         ),
         const SizedBox(width: 8),

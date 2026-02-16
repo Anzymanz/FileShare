@@ -16,6 +16,7 @@ All notable changes to this project are tracked here.
   - `Download...` action for remote files with Save As dialog and direct file write to chosen destination.
 - Persistent window state across restarts (position, size, maximized state).
 - Windows icon extraction for shared files and transfer of icon metadata to peers.
+- Theme presets selectable from the settings menu (Slate, Forest, Amber, Rose), applied to both light and dark modes.
 
 ### Changed
 - Reduced discovery/refresh polling intervals to lower sync latency.
