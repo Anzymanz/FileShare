@@ -47,6 +47,7 @@ All notable changes to this project are tracked here.
 - Custom titlebar minimize/close buttons now route through tray-aware handlers so `Minimize to tray` is applied consistently.
 - Moved `Minimize to tray` control out of Network Settings and into the main settings cog popup as a checked menu toggle.
 - Fixed minimize regression by using `bitsdojo` native minimize (`appWindow.minimize()`) for non-tray minimize in the custom titlebar flow.
+- Hardened tray minimize flow so minimize cannot terminate the app: close is always explicitly handled, tray hide/restore now use native `bitsdojo` show/hide with guarded fallback.
 
 ### Fixed
 - Fixed one-way visibility and stale peer pruning behavior.

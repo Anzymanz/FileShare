@@ -271,7 +271,7 @@ class _HomeState extends State<Home>
     );
     c.addListener(_changed);
     windowManager.addListener(this);
-    unawaited(windowManager.setPreventClose(_minimizeToTray));
+    unawaited(windowManager.setPreventClose(true));
     unawaited(_initDesktopIntegrations());
     unawaited(_initFocus());
     unawaited(c.start());
@@ -406,6 +406,9 @@ class _HomeState extends State<Home>
   @override
   void onWindowClose() {
     unawaited(_saveWindowNow());
+    if (_isQuitting) {
+      return;
+    }
     if (_minimizeToTray && !_isQuitting) {
       unawaited(
         _hideToTray(
@@ -413,7 +416,9 @@ class _HomeState extends State<Home>
           notificationBody: 'Still running in the system tray.',
         ),
       );
+      return;
     }
+    unawaited(_quitApplication());
   }
 
   void _scheduleWindowSave({bool immediate = false}) {
@@ -481,33 +486,36 @@ class _HomeState extends State<Home>
   }) async {
     if (!_minimizeToTray || !Platform.isWindows) return;
     if (_isHiddenToTray) return;
-    await _ensureTrayInitialized();
-    // A minimized window can retain a taskbar button until restored/rehidden.
     try {
+      await _ensureTrayInitialized();
+      // A minimized window can retain a taskbar button until restored/rehidden.
       if (await windowManager.isMinimized()) {
-        await windowManager.restore();
+        appWindow.restore();
       }
-    } catch (_) {}
-    await windowManager.setSkipTaskbar(true);
-    await windowManager.hide();
-    // Re-apply after hide to ensure the taskbar state sticks.
-    await windowManager.setSkipTaskbar(true);
-    _isHiddenToTray = true;
-    if (notificationTitle != null && notificationBody != null) {
-      await _showTrayNotification(notificationTitle, notificationBody);
+      await windowManager.setSkipTaskbar(true);
+      appWindow.hide();
+      // Re-apply after hide to ensure the taskbar state sticks.
+      await windowManager.setSkipTaskbar(true);
+      _isHiddenToTray = true;
+      if (notificationTitle != null && notificationBody != null) {
+        await _showTrayNotification(notificationTitle, notificationBody);
+      }
+    } catch (_) {
+      // Never let tray minimize failure terminate the app.
+      appWindow.minimize();
     }
   }
 
   Future<void> _restoreFromTray() async {
     if (!_isHiddenToTray) return;
-    await windowManager.setSkipTaskbar(false);
-    await windowManager.show();
-    await windowManager.focus();
-    if (await windowManager.isMinimized()) {
-      await windowManager.restore();
-    }
-    _isHiddenToTray = false;
-    await _disposeTray();
+    try {
+      await windowManager.setSkipTaskbar(false);
+      appWindow.show();
+      appWindow.restore();
+      await windowManager.focus();
+      _isHiddenToTray = false;
+      await _disposeTray();
+    } catch (_) {}
   }
 
   Future<void> _showTrayNotification(String title, String body) async {
@@ -533,7 +541,6 @@ class _HomeState extends State<Home>
       _minimizeToTray = value;
     }
     widget.onMinimizeToTrayChanged(value);
-    await windowManager.setPreventClose(value);
     if (value) return;
     if (_isHiddenToTray) {
       await _restoreFromTray();
@@ -565,7 +572,7 @@ class _HomeState extends State<Home>
       );
       return;
     }
-    await windowManager.close();
+    await _quitApplication();
   }
 
   @override
