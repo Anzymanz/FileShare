@@ -2,8 +2,6 @@
 
 FileShare is a lightweight Windows desktop app for local-network file sharing between nearby PCs.
 
-## Screenshot
-
 ![FileShare main window](assets/main.png)
 
 ## Features
