@@ -36,6 +36,16 @@ migrate_working_dir/
 /installer/Output/
 /installer/output/
 /notes/
+*.msi
+*.msix
+*.msixbundle
+*.appinstaller
+*.zip
+*.exe
+*.dll
+*.pdb
+*.exp
+*.lib
 
 # Symbolication related
 app.*.symbols
