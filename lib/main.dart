@@ -457,11 +457,7 @@ class _HomeState extends State<Home>
     await tray.trayManager.setToolTip('FileShare');
     await tray.trayManager.setContextMenu(
       tray.Menu(
-        items: [
-          tray.MenuItem(key: 'show_window', label: 'Show FileShare'),
-          tray.MenuItem.separator(),
-          tray.MenuItem(key: 'exit_app', label: 'Exit'),
-        ],
+        items: [tray.MenuItem(key: 'show_window', label: 'Show FileShare')],
       ),
     );
     _trayInitialized = true;
@@ -597,9 +593,6 @@ class _HomeState extends State<Home>
     switch (menuItem.key) {
       case 'show_window':
         unawaited(_restoreFromTray());
-        break;
-      case 'exit_app':
-        unawaited(_quitApplication());
         break;
       default:
         break;
