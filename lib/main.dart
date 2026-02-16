@@ -250,6 +250,7 @@ class _HomeState extends State<Home>
   bool _trayInitialized = false;
   bool _isHiddenToTray = false;
   bool _isQuitting = false;
+  DateTime _lastMinimizeSignal = DateTime.fromMillisecondsSinceEpoch(0);
   Timer? _flashTimer;
   Timer? _windowSaveDebounce;
   late final AnimationController _shakeController;
@@ -381,6 +382,7 @@ class _HomeState extends State<Home>
 
   @override
   void onWindowMinimize() {
+    _lastMinimizeSignal = DateTime.now();
     _scheduleWindowSave();
     if (_minimizeToTray) {
       unawaited(_hideToTray());
@@ -406,19 +408,37 @@ class _HomeState extends State<Home>
   @override
   void onWindowClose() {
     unawaited(_saveWindowNow());
-    if (_isQuitting) {
+    unawaited(_handleWindowCloseRequest());
+  }
+
+  Future<void> _handleWindowCloseRequest() async {
+    if (_isQuitting) return;
+
+    // Guard against platform/plugin paths that can emit close while minimizing.
+    final recentlyMinimized =
+        DateTime.now().difference(_lastMinimizeSignal) <
+        const Duration(seconds: 2);
+    var minimizedNow = false;
+    try {
+      minimizedNow = await windowManager.isMinimized();
+    } catch (_) {}
+
+    if (recentlyMinimized || minimizedNow) {
+      if (_minimizeToTray) {
+        await _hideToTray();
+      }
       return;
     }
-    if (_minimizeToTray && !_isQuitting) {
-      unawaited(
-        _hideToTray(
-          notificationTitle: 'FileShare',
-          notificationBody: 'Still running in the system tray.',
-        ),
+
+    if (_minimizeToTray) {
+      await _hideToTray(
+        notificationTitle: 'FileShare',
+        notificationBody: 'Still running in the system tray.',
       );
       return;
     }
-    unawaited(_quitApplication());
+
+    await _quitApplication();
   }
 
   void _scheduleWindowSave({bool immediate = false}) {
@@ -557,6 +577,7 @@ class _HomeState extends State<Home>
   }
 
   Future<void> _onMinimizePressed() async {
+    _lastMinimizeSignal = DateTime.now();
     if (_minimizeToTray) {
       await _hideToTray();
       return;
