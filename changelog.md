@@ -22,6 +22,8 @@ All notable changes to this project are tracked here.
 - Optional sound feedback on nudge, configurable via `Sound on nudge` toggle in Network Settings.
 - Dedicated `Themes` window opened from settings, with expanded preset collection and live selection.
 - Persistent app settings file (`settings.json`) for dark/light mode, selected theme preset, and nudge sound preference.
+- Windows system tray integration with a `Minimize to tray` setting, tray menu (`Show FileShare` / `Exit`), and click-to-restore behavior.
+- Tray notifications when hidden to tray and a remote file is added or a nudge is received.
 
 ### Changed
 - Reduced discovery/refresh polling intervals to lower sync latency.
@@ -38,6 +40,8 @@ All notable changes to this project are tracked here.
 - Transfer panel always shows full details (removed `More details` toggle).
 - Finished transfer readouts now auto-dismiss after approximately 5 seconds.
 - Decorative file-grid background now fades in only on pointer hover and only when files are present.
+- App settings persistence now includes `minimizeToTray`.
+- Bundled tray icon asset (`assets/FSICON.ico`) in Flutter assets for tray usage in built binaries.
 
 ### Fixed
 - Fixed one-way visibility and stale peer pruning behavior.

@@ -11,9 +11,11 @@ import 'package:bitsdojo_window/bitsdojo_window.dart';
 import 'package:ffi/ffi.dart';
 import 'package:file_selector/file_selector.dart' as fs;
 import 'package:flutter/material.dart';
+import 'package:local_notifier/local_notifier.dart';
 import 'package:path/path.dart' as p;
 import 'package:super_clipboard/super_clipboard.dart' as clip;
 import 'package:super_drag_and_drop/super_drag_and_drop.dart';
+import 'package:tray_manager/tray_manager.dart' as tray;
 import 'package:win32/win32.dart' as win32;
 import 'package:window_manager/window_manager.dart';
 
@@ -134,6 +136,7 @@ class _MyAppState extends State<MyApp> {
   late bool dark;
   late int themeIndex;
   late bool soundOnNudge;
+  late bool minimizeToTray;
 
   @override
   void initState() {
@@ -144,6 +147,7 @@ class _MyAppState extends State<MyApp> {
       _themePresets.length - 1,
     );
     soundOnNudge = widget.initialSettings.soundOnNudge;
+    minimizeToTray = widget.initialSettings.minimizeToTray;
   }
 
   Future<void> _persistSettings() async {
@@ -152,6 +156,7 @@ class _MyAppState extends State<MyApp> {
         darkMode: dark,
         themeIndex: themeIndex,
         soundOnNudge: soundOnNudge,
+        minimizeToTray: minimizeToTray,
       ),
     );
   }
@@ -182,6 +187,7 @@ class _MyAppState extends State<MyApp> {
         dark: dark,
         themeIndex: themeIndex,
         initialSoundOnNudge: soundOnNudge,
+        initialMinimizeToTray: minimizeToTray,
         onToggleTheme: () {
           setState(() => dark = !dark);
           unawaited(_persistSettings());
@@ -192,6 +198,10 @@ class _MyAppState extends State<MyApp> {
         },
         onSoundOnNudgeChanged: (value) {
           setState(() => soundOnNudge = value);
+          unawaited(_persistSettings());
+        },
+        onMinimizeToTrayChanged: (value) {
+          setState(() => minimizeToTray = value);
           unawaited(_persistSettings());
         },
       ),
@@ -205,32 +215,41 @@ class Home extends StatefulWidget {
     required this.dark,
     required this.themeIndex,
     required this.initialSoundOnNudge,
+    required this.initialMinimizeToTray,
     required this.onToggleTheme,
     required this.onSelectTheme,
     required this.onSoundOnNudgeChanged,
+    required this.onMinimizeToTrayChanged,
   });
 
   final bool dark;
   final int themeIndex;
   final bool initialSoundOnNudge;
+  final bool initialMinimizeToTray;
   final VoidCallback onToggleTheme;
   final ValueChanged<int> onSelectTheme;
   final ValueChanged<bool> onSoundOnNudgeChanged;
+  final ValueChanged<bool> onMinimizeToTrayChanged;
 
   @override
   State<Home> createState() => _HomeState();
 }
 
 class _HomeState extends State<Home>
-    with WindowListener, SingleTickerProviderStateMixin {
+    with WindowListener, tray.TrayListener, SingleTickerProviderStateMixin {
   final c = Controller();
   late final AudioPlayer _nudgeAudioPlayer;
   bool over = false;
   bool _pointerHovering = false;
   bool _isFocused = true;
   int _lastNudge = 0;
+  int _lastRemoteCount = 0;
   bool _flash = false;
   bool _soundOnNudge = false;
+  bool _minimizeToTray = false;
+  bool _trayInitialized = false;
+  bool _isHiddenToTray = false;
+  bool _isQuitting = false;
   Timer? _flashTimer;
   Timer? _windowSaveDebounce;
   late final AnimationController _shakeController;
@@ -239,6 +258,7 @@ class _HomeState extends State<Home>
   @override
   void initState() {
     super.initState();
+    _minimizeToTray = widget.initialMinimizeToTray;
     _soundOnNudge = widget.initialSoundOnNudge;
     _nudgeAudioPlayer = AudioPlayer()..setReleaseMode(ReleaseMode.stop);
     _shakeController = AnimationController(
@@ -251,8 +271,23 @@ class _HomeState extends State<Home>
     );
     c.addListener(_changed);
     windowManager.addListener(this);
+    unawaited(windowManager.setPreventClose(_minimizeToTray));
+    unawaited(_initDesktopIntegrations());
     unawaited(_initFocus());
     unawaited(c.start());
+  }
+
+  Future<void> _initDesktopIntegrations() async {
+    if (!Platform.isWindows) return;
+    try {
+      await localNotifier.setup(
+        appName: 'FileShare',
+        shortcutPolicy: ShortcutPolicy.requireCreate,
+      );
+    } catch (_) {}
+    if (_minimizeToTray) {
+      await _ensureTrayInitialized();
+    }
   }
 
   Future<void> _initFocus() async {
@@ -260,9 +295,20 @@ class _HomeState extends State<Home>
   }
 
   void _changed() {
+    final remoteCount = c.items.where((e) => !e.local).length;
+    if (_isHiddenToTray && remoteCount > _lastRemoteCount) {
+      unawaited(
+        _showTrayNotification('FileShare', 'New file shared by a peer.'),
+      );
+    }
+    _lastRemoteCount = remoteCount;
+
     if (c.nudgeTick != _lastNudge) {
       _lastNudge = c.nudgeTick;
       _handleNudge();
+      if (_isHiddenToTray) {
+        unawaited(_showTrayNotification('FileShare', 'You received a nudge.'));
+      }
     }
     if (mounted) setState(() {});
   }
@@ -337,6 +383,20 @@ class _HomeState extends State<Home>
   }
 
   @override
+  void onWindowMinimize() {
+    _scheduleWindowSave();
+    if (_minimizeToTray) {
+      unawaited(_hideToTray());
+    }
+  }
+
+  @override
+  void onWindowRestore() {
+    _isHiddenToTray = false;
+    _scheduleWindowSave();
+  }
+
+  @override
   void onWindowMaximize() {
     _scheduleWindowSave(immediate: true);
   }
@@ -349,6 +409,14 @@ class _HomeState extends State<Home>
   @override
   void onWindowClose() {
     unawaited(_saveWindowNow());
+    if (_minimizeToTray && !_isQuitting) {
+      unawaited(
+        _hideToTray(
+          notificationTitle: 'FileShare',
+          notificationBody: 'Still running in the system tray.',
+        ),
+      );
+    }
   }
 
   void _scheduleWindowSave({bool immediate = false}) {
@@ -384,6 +452,119 @@ class _HomeState extends State<Home>
     }());
   }
 
+  Future<void> _ensureTrayInitialized() async {
+    if (!Platform.isWindows || _trayInitialized) return;
+    tray.trayManager.addListener(this);
+    await tray.trayManager.setIcon('assets/FSICON.ico');
+    await tray.trayManager.setToolTip('FileShare');
+    await tray.trayManager.setContextMenu(
+      tray.Menu(
+        items: [
+          tray.MenuItem(key: 'show_window', label: 'Show FileShare'),
+          tray.MenuItem.separator(),
+          tray.MenuItem(key: 'exit_app', label: 'Exit'),
+        ],
+      ),
+    );
+    _trayInitialized = true;
+  }
+
+  Future<void> _disposeTray() async {
+    if (!_trayInitialized) return;
+    tray.trayManager.removeListener(this);
+    try {
+      await tray.trayManager.destroy();
+    } catch (_) {}
+    _trayInitialized = false;
+  }
+
+  Future<void> _hideToTray({
+    String? notificationTitle,
+    String? notificationBody,
+  }) async {
+    if (!_minimizeToTray || !Platform.isWindows) return;
+    if (_isHiddenToTray) return;
+    await _ensureTrayInitialized();
+    await windowManager.setSkipTaskbar(true);
+    await windowManager.hide();
+    _isHiddenToTray = true;
+    if (notificationTitle != null && notificationBody != null) {
+      await _showTrayNotification(notificationTitle, notificationBody);
+    }
+  }
+
+  Future<void> _restoreFromTray() async {
+    if (!_isHiddenToTray) return;
+    await windowManager.setSkipTaskbar(false);
+    await windowManager.show();
+    await windowManager.focus();
+    if (await windowManager.isMinimized()) {
+      await windowManager.restore();
+    }
+    _isHiddenToTray = false;
+  }
+
+  Future<void> _showTrayNotification(String title, String body) async {
+    if (!Platform.isWindows || !_isHiddenToTray) return;
+    try {
+      final notification = LocalNotification(title: title, body: body);
+      notification.onClick = () {
+        unawaited(_restoreFromTray());
+        unawaited(notification.destroy());
+      };
+      notification.onClose = (_) {
+        unawaited(notification.destroy());
+      };
+      await notification.show();
+    } catch (_) {}
+  }
+
+  Future<void> _setMinimizeToTray(bool value) async {
+    if (_minimizeToTray == value) return;
+    if (mounted) {
+      setState(() => _minimizeToTray = value);
+    } else {
+      _minimizeToTray = value;
+    }
+    widget.onMinimizeToTrayChanged(value);
+    await windowManager.setPreventClose(value);
+    if (value) {
+      await _ensureTrayInitialized();
+      return;
+    }
+    if (_isHiddenToTray) {
+      await _restoreFromTray();
+    }
+    await _disposeTray();
+  }
+
+  Future<void> _quitApplication() async {
+    _isQuitting = true;
+    await windowManager.setPreventClose(false);
+    await windowManager.setSkipTaskbar(false);
+    await _disposeTray();
+    await windowManager.close();
+  }
+
+  @override
+  void onTrayIconMouseDown() {
+    unawaited(_restoreFromTray());
+  }
+
+  @override
+  void onTrayMenuItemClick(tray.MenuItem menuItem) {
+    switch (menuItem.key) {
+      case 'show_window':
+        unawaited(_restoreFromTray());
+        break;
+      case 'exit_app':
+        unawaited(_quitApplication());
+        break;
+      default:
+        break;
+    }
+  }
+
   @override
   void dispose() {
     c.removeListener(_changed);
@@ -394,6 +575,7 @@ class _HomeState extends State<Home>
     _windowSaveDebounce?.cancel();
     _shakeController.dispose();
     unawaited(_saveWindowNow());
+    unawaited(_disposeTray());
     super.dispose();
   }
 
@@ -585,6 +767,20 @@ class _HomeState extends State<Home>
                     onChanged: (value) {
                       setDialogState(() => _soundOnNudge = value);
                       widget.onSoundOnNudgeChanged(value);
+                    },
+                  ),
+                  SwitchListTile.adaptive(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Minimize to tray'),
+                    subtitle: const Text(
+                      'Close/minimize keeps FileShare in tray',
+                    ),
+                    value: _minimizeToTray,
+                    onChanged: (value) async {
+                      await _setMinimizeToTray(value);
+                      if (!context.mounted) return;
+                      setDialogState(() {});
                     },
                   ),
                   const SizedBox(height: 8),
@@ -2743,16 +2939,19 @@ class AppSettings {
     required this.darkMode,
     required this.themeIndex,
     required this.soundOnNudge,
+    this.minimizeToTray = false,
   });
 
   final bool darkMode;
   final int themeIndex;
   final bool soundOnNudge;
+  final bool minimizeToTray;
 
   Map<String, dynamic> toJson() => {
     'darkMode': darkMode,
     'themeIndex': themeIndex,
     'soundOnNudge': soundOnNudge,
+    'minimizeToTray': minimizeToTray,
   };
 
   static AppSettings fromJson(Map<String, dynamic> json) {
@@ -2760,6 +2959,7 @@ class AppSettings {
       darkMode: json['darkMode'] == true,
       themeIndex: (json['themeIndex'] as num?)?.toInt() ?? 0,
       soundOnNudge: json['soundOnNudge'] == true,
+      minimizeToTray: json['minimizeToTray'] == true,
     );
   }
 }
@@ -2827,6 +3027,7 @@ Future<AppSettings> _loadAppSettings() async {
         darkMode: true,
         themeIndex: 0,
         soundOnNudge: false,
+        minimizeToTray: false,
       );
     }
     final data = jsonDecode(await file.readAsString());
@@ -2835,6 +3036,7 @@ Future<AppSettings> _loadAppSettings() async {
         darkMode: true,
         themeIndex: 0,
         soundOnNudge: false,
+        minimizeToTray: false,
       );
     }
     return AppSettings.fromJson(data);
@@ -2843,6 +3045,7 @@ Future<AppSettings> _loadAppSettings() async {
       darkMode: true,
       themeIndex: 0,
       soundOnNudge: false,
+      minimizeToTray: false,
     );
   }
 }

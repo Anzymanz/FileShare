@@ -7,8 +7,10 @@ list(APPEND FLUTTER_PLUGIN_LIST
   bitsdojo_window_windows
   file_selector_windows
   irondash_engine_context
+  local_notifier
   screen_retriever_windows
   super_native_extensions
+  tray_manager
   window_manager
 )
 
