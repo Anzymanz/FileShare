@@ -171,7 +171,8 @@ class Home extends StatefulWidget {
   State<Home> createState() => _HomeState();
 }
 
-class _HomeState extends State<Home> with WindowListener {
+class _HomeState extends State<Home>
+    with WindowListener, SingleTickerProviderStateMixin {
   final c = Controller();
   bool over = false;
   bool _isFocused = true;
@@ -180,10 +181,20 @@ class _HomeState extends State<Home> with WindowListener {
   bool _showTransferDetails = false;
   Timer? _flashTimer;
   Timer? _windowSaveDebounce;
+  late final AnimationController _shakeController;
+  late final Animation<double> _shakeProgress;
 
   @override
   void initState() {
     super.initState();
+    _shakeController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 360),
+    );
+    _shakeProgress = CurvedAnimation(
+      parent: _shakeController,
+      curve: Curves.easeOutCubic,
+    );
     c.addListener(_changed);
     windowManager.addListener(this);
     unawaited(_initFocus());
@@ -203,6 +214,7 @@ class _HomeState extends State<Home> with WindowListener {
   }
 
   void _handleNudge() {
+    _shakeController.forward(from: 0);
     _flashTimer?.cancel();
     setState(() => _flash = true);
     _flashTimer = Timer(const Duration(milliseconds: 500), () {
@@ -313,6 +325,7 @@ class _HomeState extends State<Home> with WindowListener {
     windowManager.removeListener(this);
     _flashTimer?.cancel();
     _windowSaveDebounce?.cancel();
+    _shakeController.dispose();
     unawaited(_saveWindowNow());
     super.dispose();
   }
@@ -342,115 +355,126 @@ class _HomeState extends State<Home> with WindowListener {
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
             onDoubleTap: () => c.sendNudge(),
-            child: Stack(
-              children: [
-                Positioned.fill(
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 120),
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                        colors: [
-                          Theme.of(
-                            context,
-                          ).colorScheme.surface.withValues(alpha: 0.98),
-                          Theme.of(context).colorScheme.surfaceContainerHighest
-                              .withValues(alpha: 0.9),
-                        ],
-                      ),
-                    ),
-                    foregroundDecoration: over
-                        ? BoxDecoration(
-                            color: Theme.of(
+            child: AnimatedBuilder(
+              animation: _shakeProgress,
+              builder: (context, child) {
+                final t = _shakeProgress.value;
+                final amp = (1 - t) * 10;
+                final dx = sin(t * pi * 10) * amp;
+                return Transform.translate(offset: Offset(dx, 0), child: child);
+              },
+              child: Stack(
+                children: [
+                  Positioned.fill(
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 120),
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                          colors: [
+                            Theme.of(
                               context,
-                            ).colorScheme.primary.withValues(alpha: 0.12),
-                          )
-                        : null,
+                            ).colorScheme.surface.withValues(alpha: 0.98),
+                            Theme.of(context)
+                                .colorScheme
+                                .surfaceContainerHighest
+                                .withValues(alpha: 0.9),
+                          ],
+                        ),
+                      ),
+                      foregroundDecoration: over
+                          ? BoxDecoration(
+                              color: Theme.of(
+                                context,
+                              ).colorScheme.primary.withValues(alpha: 0.12),
+                            )
+                          : null,
+                    ),
                   ),
-                ),
-                Positioned(
-                  top: 0,
-                  left: 0,
-                  right: 0,
-                  height: 40,
-                  child: _isTest
-                      ? _TitleBarContent(
-                          dark: widget.dark,
-                          themeIndex: widget.themeIndex,
-                          connectedCount: c.peers.length,
-                          onToggleTheme: widget.onToggleTheme,
-                          onSelectTheme: widget.onSelectTheme,
-                          onShowSettings: _showSettings,
-                          showMoveArea: false,
-                          showWindowButtons: false,
-                        )
-                      : WindowTitleBarBox(
-                          child: _TitleBarContent(
+                  Positioned(
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    height: 40,
+                    child: _isTest
+                        ? _TitleBarContent(
                             dark: widget.dark,
                             themeIndex: widget.themeIndex,
                             connectedCount: c.peers.length,
                             onToggleTheme: widget.onToggleTheme,
                             onSelectTheme: widget.onSelectTheme,
                             onShowSettings: _showSettings,
-                            showMoveArea: true,
-                            showWindowButtons: true,
-                          ),
-                        ),
-                ),
-                Positioned.fill(
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 56, 16, 16),
-                    child: c.items.isEmpty
-                        ? (over
-                              ? Center(
-                                  child: Text(
-                                    'Drop to share',
-                                    style: Theme.of(
-                                      context,
-                                    ).textTheme.titleMedium,
-                                  ),
-                                )
-                              : const SizedBox.shrink())
-                        : _ExplorerGrid(
-                            items: c.items,
-                            buildDragItem: c.buildDragItem,
-                            onRemove: (item) => c.removeLocal(item.itemId),
-                            onDownload: _downloadRemoteItem,
+                            showMoveArea: false,
+                            showWindowButtons: false,
+                          )
+                        : WindowTitleBarBox(
+                            child: _TitleBarContent(
+                              dark: widget.dark,
+                              themeIndex: widget.themeIndex,
+                              connectedCount: c.peers.length,
+                              onToggleTheme: widget.onToggleTheme,
+                              onSelectTheme: widget.onSelectTheme,
+                              onShowSettings: _showSettings,
+                              showMoveArea: true,
+                              showWindowButtons: true,
+                            ),
                           ),
                   ),
-                ),
-                if (_flash)
                   Positioned.fill(
-                    child: IgnorePointer(
-                      child: AnimatedOpacity(
-                        opacity: _flash ? 1 : 0,
-                        duration: const Duration(milliseconds: 120),
-                        child: Container(
-                          color: Theme.of(
-                            context,
-                          ).colorScheme.primary.withValues(alpha: 0.18),
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 56, 16, 16),
+                      child: c.items.isEmpty
+                          ? (over
+                                ? Center(
+                                    child: Text(
+                                      'Drop to share',
+                                      style: Theme.of(
+                                        context,
+                                      ).textTheme.titleMedium,
+                                    ),
+                                  )
+                                : const SizedBox.shrink())
+                          : _ExplorerGrid(
+                              items: c.items,
+                              buildDragItem: c.buildDragItem,
+                              onRemove: (item) => c.removeLocal(item.itemId),
+                              onDownload: _downloadRemoteItem,
+                            ),
+                    ),
+                  ),
+                  if (_flash)
+                    Positioned.fill(
+                      child: IgnorePointer(
+                        child: AnimatedOpacity(
+                          opacity: _flash ? 1 : 0,
+                          duration: const Duration(milliseconds: 120),
+                          child: Container(
+                            color: Theme.of(
+                              context,
+                            ).colorScheme.primary.withValues(alpha: 0.18),
+                          ),
                         ),
                       ),
                     ),
-                  ),
-                if (c.transfers.isNotEmpty)
-                  Positioned(
-                    left: 16,
-                    right: 16,
-                    bottom: 16,
-                    child: _TransferPanel(
-                      transfers: c.transfers,
-                      expanded: _showTransferDetails,
-                      onToggleExpanded: () {
-                        setState(
-                          () => _showTransferDetails = !_showTransferDetails,
-                        );
-                      },
-                      onClearFinished: c.clearFinishedTransfers,
+                  if (c.transfers.isNotEmpty)
+                    Positioned(
+                      left: 16,
+                      right: 16,
+                      bottom: 16,
+                      child: _TransferPanel(
+                        transfers: c.transfers,
+                        expanded: _showTransferDetails,
+                        onToggleExpanded: () {
+                          setState(
+                            () => _showTransferDetails = !_showTransferDetails,
+                          );
+                        },
+                        onClearFinished: c.clearFinishedTransfers,
+                      ),
                     ),
-                  ),
-              ],
+                ],
+              ),
             ),
           ),
         ),
