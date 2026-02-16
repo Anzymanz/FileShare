@@ -21,6 +21,7 @@ All notable changes to this project are tracked here.
 - Subtle horizontal shake animation on nudge events for stronger visual feedback.
 - Optional sound feedback on nudge, configurable via `Sound on nudge` toggle in Network Settings.
 - Dedicated `Themes` window opened from settings, with expanded preset collection and live selection.
+- Persistent app settings file (`settings.json`) for dark/light mode, selected theme preset, and nudge sound preference.
 
 ### Changed
 - Reduced discovery/refresh polling intervals to lower sync latency.

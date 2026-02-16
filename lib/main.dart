@@ -89,8 +89,9 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await windowManager.ensureInitialized();
   final savedWindowState = await _loadWindowState();
+  final savedAppSettings = await _loadAppSettings();
 
-  runApp(const MyApp());
+  runApp(MyApp(initialSettings: savedAppSettings));
 
   doWhenWindowReady(() {
     unawaited(_restoreWindow(savedWindowState));
@@ -121,15 +122,39 @@ Future<void> _restoreWindow(_WindowState? saved) async {
 }
 
 class MyApp extends StatefulWidget {
-  const MyApp({super.key});
+  const MyApp({super.key, required this.initialSettings});
+
+  final AppSettings initialSettings;
 
   @override
   State<MyApp> createState() => _MyAppState();
 }
 
 class _MyAppState extends State<MyApp> {
-  bool dark = true;
-  int themeIndex = 0;
+  late bool dark;
+  late int themeIndex;
+  late bool soundOnNudge;
+
+  @override
+  void initState() {
+    super.initState();
+    dark = widget.initialSettings.darkMode;
+    themeIndex = widget.initialSettings.themeIndex.clamp(
+      0,
+      _themePresets.length - 1,
+    );
+    soundOnNudge = widget.initialSettings.soundOnNudge;
+  }
+
+  Future<void> _persistSettings() async {
+    await _saveAppSettings(
+      AppSettings(
+        darkMode: dark,
+        themeIndex: themeIndex,
+        soundOnNudge: soundOnNudge,
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -156,8 +181,19 @@ class _MyAppState extends State<MyApp> {
       home: Home(
         dark: dark,
         themeIndex: themeIndex,
-        onToggleTheme: () => setState(() => dark = !dark),
-        onSelectTheme: (index) => setState(() => themeIndex = index),
+        initialSoundOnNudge: soundOnNudge,
+        onToggleTheme: () {
+          setState(() => dark = !dark);
+          unawaited(_persistSettings());
+        },
+        onSelectTheme: (index) {
+          setState(() => themeIndex = index);
+          unawaited(_persistSettings());
+        },
+        onSoundOnNudgeChanged: (value) {
+          setState(() => soundOnNudge = value);
+          unawaited(_persistSettings());
+        },
       ),
     );
   }
@@ -168,14 +204,18 @@ class Home extends StatefulWidget {
     super.key,
     required this.dark,
     required this.themeIndex,
+    required this.initialSoundOnNudge,
     required this.onToggleTheme,
     required this.onSelectTheme,
+    required this.onSoundOnNudgeChanged,
   });
 
   final bool dark;
   final int themeIndex;
+  final bool initialSoundOnNudge;
   final VoidCallback onToggleTheme;
   final ValueChanged<int> onSelectTheme;
+  final ValueChanged<bool> onSoundOnNudgeChanged;
 
   @override
   State<Home> createState() => _HomeState();
@@ -199,6 +239,7 @@ class _HomeState extends State<Home>
   @override
   void initState() {
     super.initState();
+    _soundOnNudge = widget.initialSoundOnNudge;
     _nudgeAudioPlayer = AudioPlayer()..setReleaseMode(ReleaseMode.stop);
     _shakeController = AnimationController(
       vsync: this,
@@ -543,6 +584,7 @@ class _HomeState extends State<Home>
                     value: _soundOnNudge,
                     onChanged: (value) {
                       setDialogState(() => _soundOnNudge = value);
+                      widget.onSoundOnNudgeChanged(value);
                     },
                   ),
                   const SizedBox(height: 8),
@@ -2696,6 +2738,32 @@ class _WindowState {
   }
 }
 
+class AppSettings {
+  const AppSettings({
+    required this.darkMode,
+    required this.themeIndex,
+    required this.soundOnNudge,
+  });
+
+  final bool darkMode;
+  final int themeIndex;
+  final bool soundOnNudge;
+
+  Map<String, dynamic> toJson() => {
+    'darkMode': darkMode,
+    'themeIndex': themeIndex,
+    'soundOnNudge': soundOnNudge,
+  };
+
+  static AppSettings fromJson(Map<String, dynamic> json) {
+    return AppSettings(
+      darkMode: json['darkMode'] == true,
+      themeIndex: (json['themeIndex'] as num?)?.toInt() ?? 0,
+      soundOnNudge: json['soundOnNudge'] == true,
+    );
+  }
+}
+
 Future<File> _windowStateFile() async {
   String? baseDir;
   if (Platform.isWindows) {
@@ -2710,6 +2778,22 @@ Future<File> _windowStateFile() async {
   final dir = Directory(p.join(root, 'FileShare'));
   await dir.create(recursive: true);
   return File(p.join(dir.path, 'window_state.json'));
+}
+
+Future<File> _appSettingsFile() async {
+  String? baseDir;
+  if (Platform.isWindows) {
+    baseDir = Platform.environment['APPDATA'];
+  } else {
+    baseDir =
+        Platform.environment['XDG_CONFIG_HOME'] ?? Platform.environment['HOME'];
+  }
+  final root = (baseDir == null || baseDir.isEmpty)
+      ? Directory.systemTemp.path
+      : baseDir;
+  final dir = Directory(p.join(root, 'FileShare'));
+  await dir.create(recursive: true);
+  return File(p.join(dir.path, 'settings.json'));
 }
 
 Future<_WindowState?> _loadWindowState() async {
@@ -2732,6 +2816,41 @@ Future<void> _saveWindowState(_WindowState state) async {
   try {
     final file = await _windowStateFile();
     await file.writeAsString(jsonEncode(state.toJson()), flush: true);
+  } catch (_) {}
+}
+
+Future<AppSettings> _loadAppSettings() async {
+  try {
+    final file = await _appSettingsFile();
+    if (!await file.exists()) {
+      return const AppSettings(
+        darkMode: true,
+        themeIndex: 0,
+        soundOnNudge: false,
+      );
+    }
+    final data = jsonDecode(await file.readAsString());
+    if (data is! Map<String, dynamic>) {
+      return const AppSettings(
+        darkMode: true,
+        themeIndex: 0,
+        soundOnNudge: false,
+      );
+    }
+    return AppSettings.fromJson(data);
+  } catch (_) {
+    return const AppSettings(
+      darkMode: true,
+      themeIndex: 0,
+      soundOnNudge: false,
+    );
+  }
+}
+
+Future<void> _saveAppSettings(AppSettings settings) async {
+  try {
+    final file = await _appSettingsFile();
+    await file.writeAsString(jsonEncode(settings.toJson()), flush: true);
   } catch (_) {}
 }
 
