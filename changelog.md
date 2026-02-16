@@ -36,6 +36,7 @@ All notable changes to this project are tracked here.
 - Nudge sound now plays `assets/nudge.mp3` instead of the generated system beep.
 - Transfer panel always shows full details (removed `More details` toggle).
 - Finished transfer readouts now auto-dismiss after approximately 5 seconds.
+- Decorative file-grid background now fades in only on pointer hover and only when files are present.
 
 ### Fixed
 - Fixed one-way visibility and stale peer pruning behavior.

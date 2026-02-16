@@ -186,6 +186,7 @@ class _HomeState extends State<Home>
   final c = Controller();
   late final AudioPlayer _nudgeAudioPlayer;
   bool over = false;
+  bool _pointerHovering = false;
   bool _isFocused = true;
   int _lastNudge = 0;
   bool _flash = false;
@@ -377,122 +378,130 @@ class _HomeState extends State<Home>
               await c.addDropped(paths);
             }
           },
-          child: GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onDoubleTap: () => c.sendNudge(),
-            child: AnimatedBuilder(
-              animation: _shakeProgress,
-              builder: (context, child) {
-                final t = _shakeProgress.value;
-                final amp = (1 - t) * 10;
-                final dx = sin(t * pi * 10) * amp;
-                return Transform.translate(offset: Offset(dx, 0), child: child);
-              },
-              child: Stack(
-                children: [
-                  Positioned.fill(
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 120),
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                          colors: [
-                            Theme.of(
-                              context,
-                            ).colorScheme.surface.withValues(alpha: 0.98),
-                            Theme.of(context)
-                                .colorScheme
-                                .surfaceContainerHighest
-                                .withValues(alpha: 0.9),
-                          ],
-                        ),
-                      ),
-                      foregroundDecoration: over
-                          ? BoxDecoration(
-                              color: Theme.of(
+          child: MouseRegion(
+            onEnter: (_) => setState(() => _pointerHovering = true),
+            onExit: (_) => setState(() => _pointerHovering = false),
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onDoubleTap: () => c.sendNudge(),
+              child: AnimatedBuilder(
+                animation: _shakeProgress,
+                builder: (context, child) {
+                  final t = _shakeProgress.value;
+                  final amp = (1 - t) * 10;
+                  final dx = sin(t * pi * 10) * amp;
+                  return Transform.translate(
+                    offset: Offset(dx, 0),
+                    child: child,
+                  );
+                },
+                child: Stack(
+                  children: [
+                    Positioned.fill(
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 120),
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                            colors: [
+                              Theme.of(
                                 context,
-                              ).colorScheme.primary.withValues(alpha: 0.12),
-                            )
-                          : null,
+                              ).colorScheme.surface.withValues(alpha: 0.98),
+                              Theme.of(context)
+                                  .colorScheme
+                                  .surfaceContainerHighest
+                                  .withValues(alpha: 0.9),
+                            ],
+                          ),
+                        ),
+                        foregroundDecoration: over
+                            ? BoxDecoration(
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.primary.withValues(alpha: 0.12),
+                              )
+                            : null,
+                      ),
                     ),
-                  ),
-                  Positioned(
-                    top: 0,
-                    left: 0,
-                    right: 0,
-                    height: 40,
-                    child: _isTest
-                        ? _TitleBarContent(
-                            dark: widget.dark,
-                            themeIndex: widget.themeIndex,
-                            connectedCount: c.connectedPeerCount,
-                            onToggleTheme: widget.onToggleTheme,
-                            onSelectTheme: widget.onSelectTheme,
-                            onShowSettings: _showSettings,
-                            showMoveArea: false,
-                            showWindowButtons: false,
-                          )
-                        : WindowTitleBarBox(
-                            child: _TitleBarContent(
+                    Positioned(
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      height: 40,
+                      child: _isTest
+                          ? _TitleBarContent(
                               dark: widget.dark,
                               themeIndex: widget.themeIndex,
                               connectedCount: c.connectedPeerCount,
                               onToggleTheme: widget.onToggleTheme,
                               onSelectTheme: widget.onSelectTheme,
                               onShowSettings: _showSettings,
-                              showMoveArea: true,
-                              showWindowButtons: true,
-                            ),
-                          ),
-                  ),
-                  Positioned.fill(
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 56, 16, 16),
-                      child: c.items.isEmpty
-                          ? (over
-                                ? Center(
-                                    child: Text(
-                                      'Drop to share',
-                                      style: Theme.of(
-                                        context,
-                                      ).textTheme.titleMedium,
-                                    ),
-                                  )
-                                : const SizedBox.shrink())
-                          : _ExplorerGrid(
-                              items: c.items,
-                              buildDragItem: c.buildDragItem,
-                              onRemove: (item) => c.removeLocal(item.itemId),
-                              onDownload: _downloadRemoteItem,
+                              showMoveArea: false,
+                              showWindowButtons: false,
+                            )
+                          : WindowTitleBarBox(
+                              child: _TitleBarContent(
+                                dark: widget.dark,
+                                themeIndex: widget.themeIndex,
+                                connectedCount: c.connectedPeerCount,
+                                onToggleTheme: widget.onToggleTheme,
+                                onSelectTheme: widget.onSelectTheme,
+                                onShowSettings: _showSettings,
+                                showMoveArea: true,
+                                showWindowButtons: true,
+                              ),
                             ),
                     ),
-                  ),
-                  if (_flash)
                     Positioned.fill(
-                      child: IgnorePointer(
-                        child: AnimatedOpacity(
-                          opacity: _flash ? 1 : 0,
-                          duration: const Duration(milliseconds: 120),
-                          child: Container(
-                            color: Theme.of(
-                              context,
-                            ).colorScheme.primary.withValues(alpha: 0.18),
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 56, 16, 16),
+                        child: c.items.isEmpty
+                            ? (over
+                                  ? Center(
+                                      child: Text(
+                                        'Drop to share',
+                                        style: Theme.of(
+                                          context,
+                                        ).textTheme.titleMedium,
+                                      ),
+                                    )
+                                  : const SizedBox.shrink())
+                            : _ExplorerGrid(
+                                items: c.items,
+                                buildDragItem: c.buildDragItem,
+                                onRemove: (item) => c.removeLocal(item.itemId),
+                                onDownload: _downloadRemoteItem,
+                                showGrid: _pointerHovering,
+                              ),
+                      ),
+                    ),
+                    if (_flash)
+                      Positioned.fill(
+                        child: IgnorePointer(
+                          child: AnimatedOpacity(
+                            opacity: _flash ? 1 : 0,
+                            duration: const Duration(milliseconds: 120),
+                            child: Container(
+                              color: Theme.of(
+                                context,
+                              ).colorScheme.primary.withValues(alpha: 0.18),
+                            ),
                           ),
                         ),
                       ),
-                    ),
-                  if (c.transfers.isNotEmpty)
-                    Positioned(
-                      left: 16,
-                      right: 16,
-                      bottom: 16,
-                      child: _TransferPanel(
-                        transfers: c.transfers,
-                        onClearFinished: c.clearFinishedTransfers,
+                    if (c.transfers.isNotEmpty)
+                      Positioned(
+                        left: 16,
+                        right: 16,
+                        bottom: 16,
+                        child: _TransferPanel(
+                          transfers: c.transfers,
+                          onClearFinished: c.clearFinishedTransfers,
+                        ),
                       ),
-                    ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),
@@ -856,12 +865,14 @@ class _ExplorerGrid extends StatelessWidget {
     required this.buildDragItem,
     required this.onRemove,
     required this.onDownload,
+    required this.showGrid,
   });
 
   final List<ShareItem> items;
   final Future<DragItem?> Function(ShareItem) buildDragItem;
   final ValueChanged<ShareItem> onRemove;
   final Future<void> Function(ShareItem) onDownload;
+  final bool showGrid;
 
   @override
   Widget build(BuildContext context) {
@@ -869,32 +880,38 @@ class _ExplorerGrid extends StatelessWidget {
       builder: (context, constraints) {
         final tileWidth = 120.0;
         final columns = max(1, (constraints.maxWidth / tileWidth).floor());
-        return CustomPaint(
-          painter: _ExplorerGridPainter(
-            color: Theme.of(
-              context,
-            ).colorScheme.onSurface.withValues(alpha: 0.06),
-          ),
-          child: GridView.builder(
-            padding: const EdgeInsets.all(8),
-            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: columns,
-              mainAxisSpacing: 8,
-              crossAxisSpacing: 8,
-              childAspectRatio: 0.9,
-            ),
-            itemCount: items.length,
-            itemBuilder: (context, index) {
-              final item = items[index];
-              return _IconTile(
-                key: ValueKey(item.key),
-                item: item,
-                createItem: buildDragItem,
-                onRemove: item.local ? () => onRemove(item) : null,
-                onDownload: item.local ? null : () => onDownload(item),
-              );
-            },
-          ),
+        return TweenAnimationBuilder<double>(
+          tween: Tween<double>(begin: 0, end: showGrid ? 0.06 : 0),
+          duration: const Duration(milliseconds: 180),
+          builder: (context, gridAlpha, _) {
+            return CustomPaint(
+              painter: _ExplorerGridPainter(
+                color: Theme.of(
+                  context,
+                ).colorScheme.onSurface.withValues(alpha: gridAlpha),
+              ),
+              child: GridView.builder(
+                padding: const EdgeInsets.all(8),
+                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: columns,
+                  mainAxisSpacing: 8,
+                  crossAxisSpacing: 8,
+                  childAspectRatio: 0.9,
+                ),
+                itemCount: items.length,
+                itemBuilder: (context, index) {
+                  final item = items[index];
+                  return _IconTile(
+                    key: ValueKey(item.key),
+                    item: item,
+                    createItem: buildDragItem,
+                    onRemove: item.local ? () => onRemove(item) : null,
+                    onDownload: item.local ? null : () => onDownload(item),
+                  );
+                },
+              ),
+            );
+          },
         );
       },
     );
