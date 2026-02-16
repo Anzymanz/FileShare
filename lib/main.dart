@@ -378,6 +378,7 @@ class _HomeState extends State<Home> with WindowListener {
                       ? _TitleBarContent(
                           dark: widget.dark,
                           themeIndex: widget.themeIndex,
+                          connectedCount: c.peers.length,
                           onToggleTheme: widget.onToggleTheme,
                           onSelectTheme: widget.onSelectTheme,
                           onShowSettings: _showSettings,
@@ -388,6 +389,7 @@ class _HomeState extends State<Home> with WindowListener {
                           child: _TitleBarContent(
                             dark: widget.dark,
                             themeIndex: widget.themeIndex,
+                            connectedCount: c.peers.length,
                             onToggleTheme: widget.onToggleTheme,
                             onSelectTheme: widget.onSelectTheme,
                             onShowSettings: _showSettings,
@@ -574,10 +576,11 @@ class _HomeState extends State<Home> with WindowListener {
   }
 }
 
-class _SettingsButton extends StatelessWidget {
+class _SettingsButton extends StatefulWidget {
   const _SettingsButton({
     required this.dark,
     required this.themeIndex,
+    required this.connectedCount,
     required this.onToggleTheme,
     required this.onSelectTheme,
     required this.onShowSettings,
@@ -585,40 +588,70 @@ class _SettingsButton extends StatelessWidget {
 
   final bool dark;
   final int themeIndex;
+  final int connectedCount;
   final VoidCallback onToggleTheme;
   final ValueChanged<int> onSelectTheme;
   final VoidCallback onShowSettings;
+
+  @override
+  State<_SettingsButton> createState() => _SettingsButtonState();
+}
+
+class _SettingsButtonState extends State<_SettingsButton> {
+  bool _hovering = false;
 
   @override
   Widget build(BuildContext context) {
     final iconColor = Theme.of(
       context,
     ).colorScheme.onSurface.withValues(alpha: 0.85);
-    return PopupMenuButton<int>(
-      tooltip: 'Settings',
-      icon: Icon(Icons.settings_rounded, size: 14, color: iconColor),
-      iconSize: 15,
-      padding: EdgeInsets.zero,
-      splashRadius: 14,
-      onSelected: (v) {
-        if (v == 1) onToggleTheme();
-        if (v == 2) onShowSettings();
-        if (v >= 10) onSelectTheme(v - 10);
-      },
-      itemBuilder: (_) => [
-        PopupMenuItem(
-          value: 1,
-          child: Text(dark ? 'Switch to light mode' : 'Switch to dark mode'),
-        ),
-        const PopupMenuItem(value: 2, child: Text('Network settings')),
-        const PopupMenuDivider(),
-        for (var i = 0; i < _themePresets.length; i++)
-          CheckedPopupMenuItem<int>(
-            value: 10 + i,
-            checked: i == themeIndex,
-            child: Text('Theme: ${_themePresets[i].name}'),
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hovering = true),
+      onExit: (_) => setState(() => _hovering = false),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          AnimatedOpacity(
+            opacity: _hovering ? 1 : 0,
+            duration: const Duration(milliseconds: 120),
+            child: Padding(
+              padding: const EdgeInsets.only(right: 6),
+              child: Text(
+                '${widget.connectedCount}',
+                style: Theme.of(context).textTheme.labelSmall,
+              ),
+            ),
           ),
-      ],
+          PopupMenuButton<int>(
+            tooltip: 'Settings',
+            icon: Icon(Icons.settings_rounded, size: 14, color: iconColor),
+            iconSize: 15,
+            padding: EdgeInsets.zero,
+            splashRadius: 14,
+            onSelected: (v) {
+              if (v == 1) widget.onToggleTheme();
+              if (v == 2) widget.onShowSettings();
+              if (v >= 10) widget.onSelectTheme(v - 10);
+            },
+            itemBuilder: (_) => [
+              PopupMenuItem(
+                value: 1,
+                child: Text(
+                  widget.dark ? 'Switch to light mode' : 'Switch to dark mode',
+                ),
+              ),
+              const PopupMenuItem(value: 2, child: Text('Network settings')),
+              const PopupMenuDivider(),
+              for (var i = 0; i < _themePresets.length; i++)
+                CheckedPopupMenuItem<int>(
+                  value: 10 + i,
+                  checked: i == widget.themeIndex,
+                  child: Text('Theme: ${_themePresets[i].name}'),
+                ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 }
@@ -627,6 +660,7 @@ class _TitleBarContent extends StatelessWidget {
   const _TitleBarContent({
     required this.dark,
     required this.themeIndex,
+    required this.connectedCount,
     required this.onToggleTheme,
     required this.onSelectTheme,
     required this.onShowSettings,
@@ -636,6 +670,7 @@ class _TitleBarContent extends StatelessWidget {
 
   final bool dark;
   final int themeIndex;
+  final int connectedCount;
   final VoidCallback onToggleTheme;
   final ValueChanged<int> onSelectTheme;
   final VoidCallback onShowSettings;
@@ -651,6 +686,7 @@ class _TitleBarContent extends StatelessWidget {
         _SettingsButton(
           dark: dark,
           themeIndex: themeIndex,
+          connectedCount: connectedCount,
           onToggleTheme: onToggleTheme,
           onSelectTheme: onSelectTheme,
           onShowSettings: onShowSettings,

@@ -17,6 +17,7 @@ All notable changes to this project are tracked here.
 - Persistent window state across restarts (position, size, maximized state).
 - Windows icon extraction for shared files and transfer of icon metadata to peers.
 - Theme presets selectable from the settings menu (Slate, Forest, Amber, Rose), applied to both light and dark modes.
+- Hover readout for connected clients count (number-only) next to the settings cog.
 
 ### Changed
 - Reduced discovery/refresh polling intervals to lower sync latency.
