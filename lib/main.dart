@@ -582,7 +582,23 @@ class _HomeState extends State<Home>
       await _hideToTray();
       return;
     }
-    appWindow.minimize();
+    try {
+      await windowManager.minimize();
+    } catch (_) {
+      appWindow.minimize();
+    }
+  }
+
+  Future<void> _onMaximizePressed() async {
+    try {
+      if (await windowManager.isMaximized()) {
+        await windowManager.unmaximize();
+      } else {
+        await windowManager.maximize();
+      }
+    } catch (_) {
+      appWindow.maximizeOrRestore();
+    }
   }
 
   Future<void> _onClosePressed() async {
@@ -715,6 +731,7 @@ class _HomeState extends State<Home>
                                 unawaited(_setMinimizeToTray(!_minimizeToTray));
                               },
                               onMinimizePressed: _onMinimizePressed,
+                              onMaximizePressed: _onMaximizePressed,
                               onClosePressed: _onClosePressed,
                               showMoveArea: false,
                               showWindowButtons: false,
@@ -734,6 +751,7 @@ class _HomeState extends State<Home>
                                   );
                                 },
                                 onMinimizePressed: _onMinimizePressed,
+                                onMaximizePressed: _onMaximizePressed,
                                 onClosePressed: _onClosePressed,
                                 showMoveArea: true,
                                 showWindowButtons: true,
@@ -1068,6 +1086,7 @@ class _TitleBarContent extends StatelessWidget {
     required this.onShowSettings,
     required this.onToggleMinimizeToTray,
     required this.onMinimizePressed,
+    required this.onMaximizePressed,
     required this.onClosePressed,
     required this.showMoveArea,
     required this.showWindowButtons,
@@ -1082,6 +1101,7 @@ class _TitleBarContent extends StatelessWidget {
   final VoidCallback onShowSettings;
   final VoidCallback onToggleMinimizeToTray;
   final Future<void> Function() onMinimizePressed;
+  final Future<void> Function() onMaximizePressed;
   final Future<void> Function() onClosePressed;
   final bool showMoveArea;
   final bool showWindowButtons;
@@ -1107,6 +1127,7 @@ class _TitleBarContent extends StatelessWidget {
           WindowButtons(
             theme: Theme.of(context),
             onMinimizePressed: onMinimizePressed,
+            onMaximizePressed: onMaximizePressed,
             onClosePressed: onClosePressed,
           ),
       ],
@@ -1119,47 +1140,109 @@ class WindowButtons extends StatelessWidget {
     super.key,
     required this.theme,
     required this.onMinimizePressed,
+    required this.onMaximizePressed,
     required this.onClosePressed,
   });
 
   final ThemeData theme;
   final Future<void> Function() onMinimizePressed;
+  final Future<void> Function() onMaximizePressed;
   final Future<void> Function() onClosePressed;
 
   @override
   Widget build(BuildContext context) {
     final base = theme.colorScheme.onSurface.withValues(alpha: 0.8);
     final hover = theme.colorScheme.onSurface.withValues(alpha: 0.1);
+    final down = theme.colorScheme.onSurface.withValues(alpha: 0.16);
     final closeHover = Colors.red.shade700;
-
-    final buttonColors = WindowButtonColors(
-      iconNormal: base,
-      mouseOver: hover,
-      mouseDown: hover,
-      iconMouseOver: base,
-      iconMouseDown: base,
-    );
-
-    final closeButtonColors = WindowButtonColors(
-      iconNormal: base,
-      mouseOver: closeHover,
-      mouseDown: closeHover.withValues(alpha: 0.9),
-      iconMouseOver: Colors.white,
-      iconMouseDown: Colors.white,
-    );
+    final closeDown = Colors.red.shade800;
 
     return Row(
       children: [
-        MinimizeWindowButton(
-          colors: buttonColors,
+        _CaptionControlButton(
+          icon: Icons.remove_rounded,
+          iconColor: base,
+          hoverColor: hover,
+          pressedColor: down,
           onPressed: () => unawaited(onMinimizePressed()),
         ),
-        MaximizeWindowButton(colors: buttonColors),
-        CloseWindowButton(
-          colors: closeButtonColors,
+        _CaptionControlButton(
+          icon: Icons.crop_square_rounded,
+          iconColor: base,
+          hoverColor: hover,
+          pressedColor: down,
+          onPressed: () => unawaited(onMaximizePressed()),
+        ),
+        _CaptionControlButton(
+          icon: Icons.close_rounded,
+          iconColor: base,
+          hoverColor: closeHover,
+          pressedColor: closeDown,
+          activeIconColor: Colors.white,
           onPressed: () => unawaited(onClosePressed()),
         ),
       ],
+    );
+  }
+}
+
+class _CaptionControlButton extends StatefulWidget {
+  const _CaptionControlButton({
+    required this.icon,
+    required this.iconColor,
+    required this.hoverColor,
+    required this.pressedColor,
+    required this.onPressed,
+    this.activeIconColor,
+  });
+
+  final IconData icon;
+  final Color iconColor;
+  final Color hoverColor;
+  final Color pressedColor;
+  final Color? activeIconColor;
+  final VoidCallback onPressed;
+
+  @override
+  State<_CaptionControlButton> createState() => _CaptionControlButtonState();
+}
+
+class _CaptionControlButtonState extends State<_CaptionControlButton> {
+  bool _hovered = false;
+  bool _pressed = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final bgColor = _pressed
+        ? widget.pressedColor
+        : _hovered
+        ? widget.hoverColor
+        : Colors.transparent;
+    final fgColor = (_hovered || _pressed)
+        ? (widget.activeIconColor ?? widget.iconColor)
+        : widget.iconColor;
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() {
+        _hovered = false;
+        _pressed = false;
+      }),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTapDown: (_) => setState(() => _pressed = true),
+        onTapCancel: () => setState(() => _pressed = false),
+        onTapUp: (_) => setState(() => _pressed = false),
+        onTap: widget.onPressed,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 90),
+          curve: Curves.easeOut,
+          width: 46,
+          height: 32,
+          color: bgColor,
+          alignment: Alignment.center,
+          child: Icon(widget.icon, size: 14, color: fgColor),
+        ),
+      ),
     );
   }
 }
