@@ -1,31 +1,38 @@
-# FileShare (Flutter Desktop MVP)
+# FileShare
 
-FileShare is a Windows desktop Flutter app for LAN file sharing between peers on the same local network.
+FileShare is a lightweight Windows desktop app for local-network file sharing between nearby PCs.
 
-## What This MVP Does
+## Features
 
-- Drag and drop files or folders into the app to share them.
-- Auto-discover peers on the same LAN (UDP broadcast).
-- See each peer's shared files.
-- Download remote files to your local `Downloads` folder.
+- Minimal custom desktop UI with dark/light theme support (dark by default).
+- Drag and drop files/folders into the window to share with connected peers.
+- Peer discovery over LAN with manual connect fallback.
+- Shared items stay visible in both windows until removed.
+- Download remote files with a Save As dialog.
+- Per-file transfer progress with speed/ETA readout.
+- Optional nudge signal (visual + sound) to get a peer's attention.
+- Minimize-to-tray mode with tray restore/exit actions and notifications.
+- Persistent settings and window state across restarts.
 
-## One-Time Machine Setup
+## Requirements
 
-1. Flutter SDK is installed at `C:\src\flutter`.
-2. Enable Windows Developer Mode (required by Flutter plugins):
-   - Open Settings -> Privacy & security -> For developers
-   - Turn on `Developer Mode`
+- Windows 10/11 x64
+- Local network connectivity between peers
 
-## Run
+## Install
+
+Use the installer from `dist/installer` for packaged builds.
+
+## Run From Source
 
 ```powershell
 cd F:\Flutter\FileShare
-C:\src\flutter\bin\flutter.bat pub get
-C:\src\flutter\bin\flutter.bat run -d windows
+flutter pub get
+flutter run -d windows
 ```
 
-## Notes
+## Build Installer
 
-- Run the app on two machines on the same subnet.
-- Firewall prompts may appear on first run; allow local network access.
-- Current MVP supports receive via button download (not OS drag-out from app window).
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\build_installer.ps1 --app-version 0.0.1
+```
