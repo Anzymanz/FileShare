@@ -21,8 +21,7 @@ FileShare is a lightweight Windows desktop app for local-network file sharing be
 
 ## Usage Scope
 
-FileShare is currently intended for small, trusted local networks with a limited number of computers.
-It has not yet been validated for larger network topologies, high peer counts, or heavy concurrent transfer loads.
+FileShare is intended for small, trusted local networks with a limited number of computers.
 
 ## Install
 
