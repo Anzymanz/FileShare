@@ -549,6 +549,25 @@ class _HomeState extends State<Home>
     await windowManager.close();
   }
 
+  Future<void> _onMinimizePressed() async {
+    if (_minimizeToTray) {
+      await _hideToTray();
+      return;
+    }
+    await windowManager.minimize();
+  }
+
+  Future<void> _onClosePressed() async {
+    if (_minimizeToTray) {
+      await _hideToTray(
+        notificationTitle: 'FileShare',
+        notificationBody: 'Still running in the system tray.',
+      );
+      return;
+    }
+    await windowManager.close();
+  }
+
   @override
   void onTrayIconMouseDown() {
     unawaited(_restoreFromTray());
@@ -663,6 +682,8 @@ class _HomeState extends State<Home>
                               onToggleTheme: widget.onToggleTheme,
                               onSelectTheme: widget.onSelectTheme,
                               onShowSettings: _showSettings,
+                              onMinimizePressed: _onMinimizePressed,
+                              onClosePressed: _onClosePressed,
                               showMoveArea: false,
                               showWindowButtons: false,
                             )
@@ -674,6 +695,8 @@ class _HomeState extends State<Home>
                                 onToggleTheme: widget.onToggleTheme,
                                 onSelectTheme: widget.onSelectTheme,
                                 onShowSettings: _showSettings,
+                                onMinimizePressed: _onMinimizePressed,
+                                onClosePressed: _onClosePressed,
                                 showMoveArea: true,
                                 showWindowButtons: true,
                               ),
@@ -1008,6 +1031,8 @@ class _TitleBarContent extends StatelessWidget {
     required this.onToggleTheme,
     required this.onSelectTheme,
     required this.onShowSettings,
+    required this.onMinimizePressed,
+    required this.onClosePressed,
     required this.showMoveArea,
     required this.showWindowButtons,
   });
@@ -1018,6 +1043,8 @@ class _TitleBarContent extends StatelessWidget {
   final VoidCallback onToggleTheme;
   final ValueChanged<int> onSelectTheme;
   final VoidCallback onShowSettings;
+  final Future<void> Function() onMinimizePressed;
+  final Future<void> Function() onClosePressed;
   final bool showMoveArea;
   final bool showWindowButtons;
 
@@ -1036,16 +1063,28 @@ class _TitleBarContent extends StatelessWidget {
           onShowSettings: onShowSettings,
         ),
         const SizedBox(width: 8),
-        if (showWindowButtons) WindowButtons(theme: Theme.of(context)),
+        if (showWindowButtons)
+          WindowButtons(
+            theme: Theme.of(context),
+            onMinimizePressed: onMinimizePressed,
+            onClosePressed: onClosePressed,
+          ),
       ],
     );
   }
 }
 
 class WindowButtons extends StatelessWidget {
-  const WindowButtons({super.key, required this.theme});
+  const WindowButtons({
+    super.key,
+    required this.theme,
+    required this.onMinimizePressed,
+    required this.onClosePressed,
+  });
 
   final ThemeData theme;
+  final Future<void> Function() onMinimizePressed;
+  final Future<void> Function() onClosePressed;
 
   @override
   Widget build(BuildContext context) {
@@ -1071,9 +1110,15 @@ class WindowButtons extends StatelessWidget {
 
     return Row(
       children: [
-        MinimizeWindowButton(colors: buttonColors),
+        MinimizeWindowButton(
+          colors: buttonColors,
+          onPressed: () => unawaited(onMinimizePressed()),
+        ),
         MaximizeWindowButton(colors: buttonColors),
-        CloseWindowButton(colors: closeButtonColors),
+        CloseWindowButton(
+          colors: closeButtonColors,
+          onPressed: () => unawaited(onClosePressed()),
+        ),
       ],
     );
   }
