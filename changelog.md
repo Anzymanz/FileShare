@@ -24,12 +24,14 @@ All notable changes to this project are tracked here.
 
 ### Changed
 - Reduced discovery/refresh polling intervals to lower sync latency.
+- Rebalanced discovery/refresh polling for responsiveness without UI stutter (`announce 700ms`, `refresh 350ms`, `min fetch 280ms`).
 - Improved peer handling and deduplication to prevent duplicate file/peer entries.
 - Simplified network settings UI to show core fields (device name, IP, port, peer list).
 - Updated settings cog to proper inactive/hover/pressed behavior and smaller size.
 - Reduced minimum window size so the window can be resized smaller.
 - Empty-state drop hint now appears only while dragging over the window and only when no items are present.
 - Probe action feedback improved with explicit `Sending...`, success, and invalid-IP states.
+- UDP presence handling now avoids unnecessary full-UI refreshes when heartbeat packets contain no meaningful peer changes.
 
 ### Fixed
 - Fixed one-way visibility and stale peer pruning behavior.

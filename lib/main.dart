@@ -23,9 +23,9 @@ const String _tag = 'fileshare_lan_v2';
 const int _maxHeaderBytes = 5 * 1024 * 1024;
 const Size _minWindowSize = Size(420, 280);
 const Size _defaultWindowSize = Size(900, 600);
-const Duration _announceInterval = Duration(milliseconds: 50);
-const Duration _refreshInterval = Duration(milliseconds: 50);
-const Duration _minFetchInterval = Duration(milliseconds: 50);
+const Duration _announceInterval = Duration(milliseconds: 700);
+const Duration _refreshInterval = Duration(milliseconds: 350);
+const Duration _minFetchInterval = Duration(milliseconds: 280);
 const Duration _pruneInterval = Duration(seconds: 3);
 const Duration _peerPruneAfter = Duration(seconds: 20);
 final bool _isTest =
@@ -1882,6 +1882,8 @@ class Controller extends ChangeNotifier {
         }
 
         final now = DateTime.now();
+        final existed = peers.containsKey(id);
+        final beforeCount = peers.length;
         final p = peers.putIfAbsent(
           id,
           () => Peer(
@@ -1895,7 +1897,11 @@ class Controller extends ChangeNotifier {
           ),
         );
         _mergeDuplicatePeersFor(id);
+        final dedupedPeers = peers.length != beforeCount;
 
+        final nameChanged = p.name != name;
+        final endpointChanged =
+            p.addr.address != g.address.address || p.port != port;
         final revChanged = p.rev != rev;
         p
           ..name = name
@@ -1908,7 +1914,13 @@ class Controller extends ChangeNotifier {
             now.difference(p.lastFetch) > const Duration(seconds: 3)) {
           unawaited(_fetchManifest(p));
         }
-        notifyListeners();
+        if (!existed ||
+            nameChanged ||
+            endpointChanged ||
+            revChanged ||
+            dedupedPeers) {
+          notifyListeners();
+        }
       } catch (_) {}
     }
   }
