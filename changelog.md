@@ -29,3 +29,4 @@ All notable changes to this project are tracked here.
 - Fixed icon reuse bug where multiple dropped files could show the same icon.
 - Fixed icon/grid refresh flicker by stabilizing tile identity and update behavior.
 - Fixed one-way nudge behavior with protocol fallback and dedupe logic.
+- Fixed settings popup menu collapsing into a tiny square by removing menu constraints from the settings cog button.

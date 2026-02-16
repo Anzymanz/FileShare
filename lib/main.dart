@@ -527,11 +527,10 @@ class _SettingsButton extends StatelessWidget {
     ).colorScheme.onSurface.withValues(alpha: 0.85);
     return PopupMenuButton<int>(
       tooltip: 'Settings',
-      icon: Icon(Icons.settings_rounded, size: 15, color: iconColor),
+      icon: Icon(Icons.settings_rounded, size: 14, color: iconColor),
       iconSize: 15,
       padding: EdgeInsets.zero,
       splashRadius: 14,
-      constraints: const BoxConstraints.tightFor(width: 30, height: 30),
       onSelected: (v) {
         if (v == 1) onToggleTheme();
         if (v == 2) onShowSettings();
