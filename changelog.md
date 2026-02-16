@@ -26,6 +26,7 @@ All notable changes to this project are tracked here.
 - Reduced discovery/refresh polling intervals to lower sync latency.
 - Rebalanced discovery/refresh polling for responsiveness without UI stutter (`announce 700ms`, `refresh 350ms`, `min fetch 280ms`).
 - Improved peer handling and deduplication to prevent duplicate file/peer entries.
+- Connected peer count now tracks recent successful contact, reducing false zero-count states during asymmetric UDP scenarios.
 - Simplified network settings UI to show core fields (device name, IP, port, peer list).
 - Updated settings cog to proper inactive/hover/pressed behavior and smaller size.
 - Reduced minimum window size so the window can be resized smaller.

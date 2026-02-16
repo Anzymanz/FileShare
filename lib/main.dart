@@ -28,7 +28,7 @@ const Duration _announceInterval = Duration(milliseconds: 700);
 const Duration _refreshInterval = Duration(milliseconds: 350);
 const Duration _minFetchInterval = Duration(milliseconds: 280);
 const Duration _pruneInterval = Duration(seconds: 3);
-const Duration _peerPruneAfter = Duration(seconds: 20);
+const Duration _peerPruneAfter = Duration(seconds: 45);
 final bool _isTest =
     bool.fromEnvironment('FLUTTER_TEST') ||
     Platform.environment.containsKey('FLUTTER_TEST');
@@ -426,7 +426,7 @@ class _HomeState extends State<Home>
                         ? _TitleBarContent(
                             dark: widget.dark,
                             themeIndex: widget.themeIndex,
-                            connectedCount: c.peers.length,
+                            connectedCount: c.connectedPeerCount,
                             onToggleTheme: widget.onToggleTheme,
                             onSelectTheme: widget.onSelectTheme,
                             onShowSettings: _showSettings,
@@ -437,7 +437,7 @@ class _HomeState extends State<Home>
                             child: _TitleBarContent(
                               dark: widget.dark,
                               themeIndex: widget.themeIndex,
-                              connectedCount: c.peers.length,
+                              connectedCount: c.connectedPeerCount,
                               onToggleTheme: widget.onToggleTheme,
                               onSelectTheme: widget.onSelectTheme,
                               onShowSettings: _showSettings,
@@ -610,7 +610,7 @@ class _HomeState extends State<Home>
                     Text(connectStatus!),
                   ],
                   const SizedBox(height: 8),
-                  Text('Peers Online: ${peers.length}'),
+                  Text('Peers Online: ${c.connectedPeerCount}'),
                   if (peers.isEmpty) const Text('No peers connected'),
                   for (final p in peers)
                     Text('- ${p.name} | ${p.addr.address}:${p.port}'),
@@ -1354,6 +1354,13 @@ class Controller extends ChangeNotifier {
   int _transferCounter = 0;
   DateTime _lastTransferNotify = DateTime.fromMillisecondsSinceEpoch(0);
 
+  int get connectedPeerCount {
+    final now = DateTime.now();
+    return peers.values
+        .where((p) => now.difference(p.lastGoodContact) <= _peerPruneAfter)
+        .length;
+  }
+
   List<TransferEntry> get transfers {
     final out = _transfers.values.toList(growable: false);
     out.sort((a, b) {
@@ -1595,6 +1602,7 @@ class Controller extends ChangeNotifier {
             rev: rev,
             items: [],
             lastSeen: now,
+            lastGoodContact: now,
           ),
         );
         p
@@ -1602,7 +1610,8 @@ class Controller extends ChangeNotifier {
           ..addr = addr
           ..port = port
           ..rev = rev
-          ..lastSeen = now;
+          ..lastSeen = now
+          ..lastGoodContact = now;
         _mergeDuplicatePeersFor(id);
         p.items
           ..clear()
@@ -1889,6 +1898,7 @@ class Controller extends ChangeNotifier {
             rev: rev,
             items: [],
             lastSeen: now,
+            lastGoodContact: now,
           ),
         );
         _mergeDuplicatePeersFor(id);
@@ -1903,7 +1913,8 @@ class Controller extends ChangeNotifier {
           ..addr = g.address
           ..port = port
           ..rev = rev
-          ..lastSeen = now;
+          ..lastSeen = now
+          ..lastGoodContact = now;
 
         if (revChanged ||
             now.difference(p.lastFetch) > const Duration(seconds: 3)) {
@@ -1923,7 +1934,7 @@ class Controller extends ChangeNotifier {
   void _prunePeers() {
     final now = DateTime.now();
     final stale = peers.values
-        .where((e) => now.difference(e.lastSeen) > _peerPruneAfter)
+        .where((e) => now.difference(e.lastGoodContact) > _peerPruneAfter)
         .map((e) => e.id)
         .toList();
     if (stale.isEmpty) return;
@@ -1970,6 +1981,7 @@ class Controller extends ChangeNotifier {
           p0.name = name;
         }
         p0.lastSeen = DateTime.now();
+        p0.lastGoodContact = DateTime.now();
         final changed = !_sameRemoteItems(p0.items, list);
         if (changed) {
           p0.items
@@ -2051,6 +2063,7 @@ class Controller extends ChangeNotifier {
         rev: rev,
         items: [],
         lastSeen: now,
+        lastGoodContact: now,
       ),
     );
     _mergeDuplicatePeersFor(id);
@@ -2059,7 +2072,8 @@ class Controller extends ChangeNotifier {
       ..addr = remoteAddress
       ..port = port
       ..rev = rev
-      ..lastSeen = now;
+      ..lastSeen = now
+      ..lastGoodContact = now;
   }
 
   void _mergeDuplicatePeersFor(String canonicalId) {
@@ -2859,6 +2873,7 @@ class Peer {
     required this.rev,
     required this.items,
     required this.lastSeen,
+    required this.lastGoodContact,
   });
 
   final String id;
@@ -2868,6 +2883,7 @@ class Peer {
   int rev;
   List<RemoteItem> items;
   DateTime lastSeen;
+  DateTime lastGoodContact;
   bool fetching = false;
   DateTime lastFetch = DateTime.fromMillisecondsSinceEpoch(0);
 }
