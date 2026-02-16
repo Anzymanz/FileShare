@@ -29,6 +29,7 @@ environment:
 # versions available, run `flutter pub outdated`.
 dependencies:
   bitsdojo_window: ^0.1.6
+  file_selector: ^1.1.0
   flutter:
     sdk: flutter
   ffi: ^2.1.2

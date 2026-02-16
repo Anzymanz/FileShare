@@ -8,6 +8,7 @@ import 'dart:ui' as ui;
 
 import 'package:bitsdojo_window/bitsdojo_window.dart';
 import 'package:ffi/ffi.dart';
+import 'package:file_selector/file_selector.dart' as fs;
 import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
 import 'package:super_clipboard/super_clipboard.dart' as clip;
@@ -168,6 +169,38 @@ class _HomeState extends State<Home> with WindowListener {
     });
     if (!_isFocused) {
       unawaited(_flashTaskbar());
+    }
+  }
+
+  Future<void> _downloadRemoteItem(ShareItem item) async {
+    if (item.local) return;
+    final suggestedName = p.basename(item.rel);
+    final extension = p.extension(suggestedName);
+    final acceptedGroups = extension.isEmpty
+        ? const <fs.XTypeGroup>[]
+        : <fs.XTypeGroup>[
+            fs.XTypeGroup(
+              label: '${extension.toUpperCase()} Files',
+              extensions: <String>[extension.substring(1)],
+            ),
+          ];
+    final location = await fs.getSaveLocation(
+      suggestedName: suggestedName,
+      acceptedTypeGroups: acceptedGroups,
+      confirmButtonText: 'Download',
+    );
+    if (location == null) return;
+    try {
+      await c.downloadRemoteToPath(item, location.path);
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Downloaded $suggestedName')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Download failed: $e')));
     }
   }
 
@@ -332,6 +365,7 @@ class _HomeState extends State<Home> with WindowListener {
                             items: c.items,
                             buildDragItem: c.buildDragItem,
                             onRemove: (item) => c.removeLocal(item.itemId),
+                            onDownload: _downloadRemoteItem,
                           ),
                   ),
                 ),
@@ -376,6 +410,9 @@ class _HomeState extends State<Home> with WindowListener {
   Future<void> _showSettings() async {
     final peers = c.peers.values.toList()
       ..sort((a, b) => a.name.compareTo(b.name));
+    final localIpSummary = c.localIps.isEmpty
+        ? 'Unavailable'
+        : c.localIps.join(', ');
     final probeController = TextEditingController();
     String? probeStatus;
     String? connectStatus;
@@ -391,24 +428,12 @@ class _HomeState extends State<Home> with WindowListener {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text('Device: ${c.deviceName}'),
-                  Text('Device ID: ${c.deviceId}'),
-                  Text('Transfer Port: ${c.listenPort}'),
-                  Text('Discovery Port: $_discoveryPort'),
-                  Text(
-                    'Discovery Mode: '
-                    '${c.multicastEnabled ? 'Broadcast + Multicast' : 'Broadcast'}',
-                  ),
-                  Text('Manifest Revision: ${c.revision}'),
+                  const Text('This Device'),
+                  Text('Name: ${c.deviceName}'),
+                  Text('IP: $localIpSummary'),
+                  Text('Port: ${c.listenPort}'),
                   const SizedBox(height: 8),
-                  const Text('Local Addresses:'),
-                  Text(
-                    c.localIps.isEmpty
-                        ? 'No active IPv4 interfaces'
-                        : c.localIps.join(', '),
-                  ),
-                  const SizedBox(height: 12),
-                  const Text('Manual Peer Probe:'),
+                  const Text('Manual Peer Connect'),
                   const SizedBox(height: 6),
                   Row(
                     children: [
@@ -416,7 +441,7 @@ class _HomeState extends State<Home> with WindowListener {
                         child: TextField(
                           controller: probeController,
                           decoration: const InputDecoration(
-                            hintText: 'Peer IP or IP:port (e.g. 192.168.1.42)',
+                            hintText: 'Peer IP or IP:port',
                             isDense: true,
                           ),
                         ),
@@ -440,7 +465,7 @@ class _HomeState extends State<Home> with WindowListener {
                     const SizedBox(height: 4),
                     Text(probeStatus!),
                   ],
-                  const SizedBox(height: 8),
+                  const SizedBox(height: 4),
                   Row(
                     children: [
                       const Spacer(),
@@ -463,22 +488,16 @@ class _HomeState extends State<Home> with WindowListener {
                     const SizedBox(height: 4),
                     Text(connectStatus!),
                   ],
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 8),
                   Text('Peers Online: ${peers.length}'),
+                  if (peers.isEmpty) const Text('No peers connected'),
                   for (final p in peers)
-                    Text(
-                      '- ${p.name} (${p.addr.address}:${p.port})'
-                      ' ${c.peerStatus[p.id] ?? c.peerHealth[p.id] ?? ''}',
-                    ),
+                    Text('- ${p.name} | ${p.addr.address}:${p.port}'),
                 ],
               ),
             ),
           ),
           actions: [
-            TextButton(
-              onPressed: () => c.runHealthCheck(),
-              child: const Text('Check Peers'),
-            ),
             TextButton(
               onPressed: () => Navigator.pop(context),
               child: const Text('Close'),
@@ -503,8 +522,16 @@ class _SettingsButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final iconColor = Theme.of(
+      context,
+    ).colorScheme.onSurface.withValues(alpha: 0.85);
     return PopupMenuButton<int>(
       tooltip: 'Settings',
+      icon: Icon(Icons.settings_rounded, size: 15, color: iconColor),
+      iconSize: 15,
+      padding: EdgeInsets.zero,
+      splashRadius: 14,
+      constraints: const BoxConstraints.tightFor(width: 30, height: 30),
       onSelected: (v) {
         if (v == 1) onToggleTheme();
         if (v == 2) onShowSettings();
@@ -516,15 +543,6 @@ class _SettingsButton extends StatelessWidget {
         ),
         const PopupMenuItem(value: 2, child: Text('Network settings')),
       ],
-      child: Container(
-        width: 34,
-        height: 34,
-        decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.surfaceContainerHighest,
-          borderRadius: BorderRadius.circular(17),
-        ),
-        child: const Icon(Icons.settings, size: 18),
-      ),
     );
   }
 }
@@ -625,11 +643,13 @@ class _ExplorerGrid extends StatelessWidget {
     required this.items,
     required this.buildDragItem,
     required this.onRemove,
+    required this.onDownload,
   });
 
   final List<ShareItem> items;
   final Future<DragItem?> Function(ShareItem) buildDragItem;
   final ValueChanged<ShareItem> onRemove;
+  final Future<void> Function(ShareItem) onDownload;
 
   @override
   Widget build(BuildContext context) {
@@ -659,6 +679,7 @@ class _ExplorerGrid extends StatelessWidget {
                 item: item,
                 createItem: buildDragItem,
                 onRemove: item.local ? () => onRemove(item) : null,
+                onDownload: item.local ? null : () => onDownload(item),
               );
             },
           ),
@@ -697,11 +718,13 @@ class _IconTile extends StatefulWidget {
     required this.item,
     required this.createItem,
     required this.onRemove,
+    required this.onDownload,
   });
 
   final ShareItem item;
   final Future<DragItem?> Function(ShareItem) createItem;
   final VoidCallback? onRemove;
+  final Future<void> Function()? onDownload;
 
   @override
   State<_IconTile> createState() => _IconTileState();
@@ -805,12 +828,25 @@ class _IconTileState extends State<_IconTile> {
                     style: theme.textTheme.bodySmall,
                   ),
                 ),
-                if (widget.onRemove != null)
-                  IconButton(
-                    tooltip: 'Remove',
-                    visualDensity: VisualDensity.compact,
-                    onPressed: widget.onRemove,
-                    icon: const Icon(Icons.close, size: 16),
+                if (widget.onDownload != null || widget.onRemove != null)
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (widget.onDownload != null)
+                        IconButton(
+                          tooltip: 'Download...',
+                          visualDensity: VisualDensity.compact,
+                          onPressed: () => widget.onDownload?.call(),
+                          icon: const Icon(Icons.download, size: 16),
+                        ),
+                      if (widget.onRemove != null)
+                        IconButton(
+                          tooltip: 'Remove',
+                          visualDensity: VisualDensity.compact,
+                          onPressed: widget.onRemove,
+                          icon: const Icon(Icons.close, size: 16),
+                        ),
+                    ],
                   ),
               ],
             ),
@@ -1393,6 +1429,38 @@ class Controller extends ChangeNotifier {
       },
     );
     return item;
+  }
+
+  Future<void> downloadRemoteToPath(ShareItem item, String outputPath) async {
+    if (item.local) {
+      throw Exception('Item is already local');
+    }
+    final target = File(outputPath);
+    await target.parent.create(recursive: true);
+    final temp = File('$outputPath.fileshare.part');
+    if (await temp.exists()) {
+      await temp.delete();
+    }
+    final sink = temp.openWrite(mode: FileMode.writeOnly);
+    try {
+      await _streamRemote(item, sink, () => false);
+      await sink.flush();
+      await sink.close();
+      if (await target.exists()) {
+        await target.delete();
+      }
+      await temp.rename(target.path);
+    } catch (e) {
+      try {
+        await sink.close();
+      } catch (_) {}
+      try {
+        if (await temp.exists()) {
+          await temp.delete();
+        }
+      } catch (_) {}
+      rethrow;
+    }
   }
 
   Future<void> refreshAll() async {
@@ -2211,7 +2279,7 @@ class Controller extends ChangeNotifier {
     if (!Platform.isWindows) {
       return null;
     }
-    final key = p.extension(path).toLowerCase();
+    final key = p.normalize(path).toLowerCase();
     final cached = _iconCache[key];
     if (cached != null) {
       return cached;
@@ -2231,13 +2299,11 @@ Future<Uint8List?> _extractWindowsIconPng(String path) async {
 
   final pathPtr = path.toNativeUtf16();
   final info = calloc<win32.SHFILEINFO>();
-  const flags =
-      win32.SHGFI_ICON | win32.SHGFI_LARGEICON | win32.SHGFI_USEFILEATTRIBUTES;
-  const attrs = win32.FILE_ATTRIBUTE_NORMAL;
+  const flags = win32.SHGFI_ICON | win32.SHGFI_LARGEICON;
 
   final result = win32.SHGetFileInfo(
     pathPtr,
-    attrs,
+    0,
     info,
     ffi.sizeOf<win32.SHFILEINFO>(),
     flags,
