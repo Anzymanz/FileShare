@@ -70,9 +70,18 @@ class _ThemePreset {
 
 const List<_ThemePreset> _themePresets = [
   _ThemePreset(name: 'Slate', seed: Color(0xFF4A5D73)),
+  _ThemePreset(name: 'Ocean', seed: Color(0xFF1F6F8B)),
+  _ThemePreset(name: 'Arctic', seed: Color(0xFF2A7DA7)),
   _ThemePreset(name: 'Forest', seed: Color(0xFF2F6B4F)),
+  _ThemePreset(name: 'Moss', seed: Color(0xFF5C7A3D)),
+  _ThemePreset(name: 'Sage', seed: Color(0xFF6A7B68)),
   _ThemePreset(name: 'Amber', seed: Color(0xFF8A5A15)),
+  _ThemePreset(name: 'Copper', seed: Color(0xFF8C4F2D)),
+  _ThemePreset(name: 'Cherry', seed: Color(0xFF8C2F39)),
   _ThemePreset(name: 'Rose', seed: Color(0xFF7A3D4F)),
+  _ThemePreset(name: 'Lilac', seed: Color(0xFF6D5A8A)),
+  _ThemePreset(name: 'Graphite', seed: Color(0xFF424750)),
+  _ThemePreset(name: 'Midnight', seed: Color(0xFF263046)),
 ];
 
 Future<void> main() async {
@@ -639,6 +648,52 @@ class _SettingsButton extends StatefulWidget {
 class _SettingsButtonState extends State<_SettingsButton> {
   bool _hovering = false;
 
+  Future<void> _showThemesWindow(BuildContext context) async {
+    var selected = widget.themeIndex;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Themes'),
+          content: SizedBox(
+            width: 380,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 360),
+              child: ListView.builder(
+                shrinkWrap: true,
+                itemCount: _themePresets.length,
+                itemBuilder: (context, index) {
+                  final preset = _themePresets[index];
+                  return ListTile(
+                    dense: true,
+                    leading: CircleAvatar(
+                      radius: 10,
+                      backgroundColor: preset.seed,
+                    ),
+                    title: Text(preset.name),
+                    trailing: selected == index
+                        ? const Icon(Icons.check, size: 18)
+                        : null,
+                    onTap: () {
+                      setDialogState(() => selected = index);
+                      widget.onSelectTheme(index);
+                    },
+                  );
+                },
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Close'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final iconColor = Theme.of(
@@ -670,7 +725,7 @@ class _SettingsButtonState extends State<_SettingsButton> {
             onSelected: (v) {
               if (v == 1) widget.onToggleTheme();
               if (v == 2) widget.onShowSettings();
-              if (v >= 10) widget.onSelectTheme(v - 10);
+              if (v == 3) unawaited(_showThemesWindow(context));
             },
             itemBuilder: (_) => [
               PopupMenuItem(
@@ -680,13 +735,7 @@ class _SettingsButtonState extends State<_SettingsButton> {
                 ),
               ),
               const PopupMenuItem(value: 2, child: Text('Network settings')),
-              const PopupMenuDivider(),
-              for (var i = 0; i < _themePresets.length; i++)
-                CheckedPopupMenuItem<int>(
-                  value: 10 + i,
-                  checked: i == widget.themeIndex,
-                  child: Text('Theme: ${_themePresets[i].name}'),
-                ),
+              const PopupMenuItem(value: 3, child: Text('Themes...')),
             ],
           ),
         ],

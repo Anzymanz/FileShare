@@ -20,6 +20,7 @@ All notable changes to this project are tracked here.
 - Hover readout for connected clients count (number-only) next to the settings cog.
 - Subtle horizontal shake animation on nudge events for stronger visual feedback.
 - Optional sound feedback on nudge, configurable via `Sound on nudge` toggle in Network Settings.
+- Dedicated `Themes` window opened from settings, with expanded preset collection and live selection.
 
 ### Changed
 - Reduced discovery/refresh polling intervals to lower sync latency.
