@@ -3,7 +3,7 @@ AppName=FileShare
 AppVersion={#AppVersion}
 AppPublisher=FileShare
 AppPublisherURL=https://example.com
-DefaultDirName={pf}\FileShare
+DefaultDirName={autopf}\FileShare
 DefaultGroupName=FileShare
 DisableProgramGroupPage=yes
 OutputDir={#OutputDir}
@@ -11,7 +11,7 @@ OutputBaseFilename=FileShare-Setup-{#AppVersion}
 SetupIconFile={#SourcePath}\..\windows\runner\resources\app_icon.ico
 Compression=lzma
 SolidCompression=yes
-ArchitecturesInstallIn64BitMode=x64
+ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=admin
 
 [Files]
