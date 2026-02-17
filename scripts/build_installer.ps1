@@ -3,6 +3,7 @@ param(
   [string]$AppVersion,
   [string]$Configuration = "release",
   [string]$IsccPath,
+  [string]$VCRedistPath,
   [Parameter(ValueFromRemainingArguments = $true)]
   [string[]]$CliArgs
 )
@@ -14,6 +15,8 @@ $issPath = Join-Path $repoRoot "installer\FileShare.iss"
 $buildDirRelease = Join-Path $repoRoot "build\windows\x64\runner\Release"
 $buildDirDebug = Join-Path $repoRoot "build\windows\x64\runner\Debug"
 $outputDir = Join-Path $repoRoot "dist\installer"
+$vcRedistCachePath = Join-Path $repoRoot "installer\redist\VC_redist.x64.exe"
+$vcRedistDownloadUrl = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
 
 function Resolve-IsccPath {
   param([string]$ExplicitPath)
@@ -80,13 +83,42 @@ Options (PowerShell style):
   -AppVersion <semver>
   -Configuration <release|debug>
   -IsccPath <path-to-ISCC.exe>
+  -VCRedistPath <path-to-VC_redist.x64.exe>
 
 Options (GNU style):
   --app-version <semver> | --app-version=<semver>
   --configuration <release|debug> | --configuration=<release|debug>
   --iscc-path <path> | --iscc-path=<path>
+  --vc-redist-path <path> | --vc-redist-path=<path>
   --help
 "@
+}
+
+function Resolve-VCRedistPath {
+  param([string]$ExplicitPath)
+
+  if ($ExplicitPath) {
+    if (Test-Path $ExplicitPath) {
+      return (Resolve-Path $ExplicitPath).Path
+    }
+    throw "Provided -VCRedistPath does not exist: $ExplicitPath"
+  }
+
+  if (Test-Path $vcRedistCachePath) {
+    return (Resolve-Path $vcRedistCachePath).Path
+  }
+
+  $vcRedistDir = Split-Path -Parent $vcRedistCachePath
+  New-Item -ItemType Directory -Force -Path $vcRedistDir | Out-Null
+
+  Write-Host "Downloading Microsoft Visual C++ Redistributable (x64)..."
+  Invoke-WebRequest -Uri $vcRedistDownloadUrl -OutFile $vcRedistCachePath
+
+  if (-not (Test-Path $vcRedistCachePath)) {
+    throw "Failed to download VC_redist.x64.exe from $vcRedistDownloadUrl"
+  }
+
+  return (Resolve-Path $vcRedistCachePath).Path
 }
 
 function Apply-GnuStyleArgs {
@@ -126,6 +158,7 @@ function Apply-GnuStyleArgs {
       "--app-version" { $script:AppVersion = $value }
       "--configuration" { $script:Configuration = $value }
       "--iscc-path" { $script:IsccPath = $value }
+      "--vc-redist-path" { $script:VCRedistPath = $value }
       default {
         throw "Unsupported argument '$key'. Use --help to see supported options."
       }
@@ -180,6 +213,14 @@ if ($Configuration -eq "release") {
 if (-not (Test-Path (Join-Path $buildDir "fileshare.exe"))) {
   throw "Built executable not found in $buildDir (expected fileshare.exe)"
 }
+
+$vcRedistResolvedPath = Resolve-VCRedistPath -ExplicitPath $VCRedistPath
+$vcRedistStagedPath = Join-Path $buildDir "VC_redist.x64.exe"
+Copy-Item -Path $vcRedistResolvedPath -Destination $vcRedistStagedPath -Force
+if (-not (Test-Path $vcRedistStagedPath)) {
+  throw "Unable to stage VC_redist.x64.exe in build directory."
+}
+Write-Host "Staged VC++ runtime installer: $vcRedistStagedPath"
 
 $isccExe = Resolve-IsccPath -ExplicitPath $IsccPath
 Write-Host "Using ISCC: $isccExe"
