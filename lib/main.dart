@@ -1734,6 +1734,16 @@ String _uriToPath(Uri uri) {
   }
 }
 
+String _safeFileName(String name) {
+  final sanitized = name
+      .replaceAll(RegExp(r'[<>:"/\\|?*]'), '_')
+      .replaceAll(RegExp(r'[\x00-\x1F]'), '_')
+      .trim();
+  if (sanitized.isEmpty) return 'file';
+  if (sanitized == '.' || sanitized == '..') return 'file';
+  return sanitized;
+}
+
 class Controller extends ChangeNotifier {
   final deviceId = _id();
   final deviceName = Platform.localHostname;
@@ -1760,6 +1770,7 @@ class Controller extends ChangeNotifier {
   final Map<String, DateTime> _lastNudgeFrom = {};
   final Map<String, TransferEntry> _transfers = {};
   final Map<String, Timer> _transferDismissTimers = {};
+  final Map<String, Future<String?>> _dragMaterializationInFlight = {};
   int _transferCounter = 0;
   DateTime _lastTransferNotify = DateTime.fromMillisecondsSinceEpoch(0);
 
@@ -2047,28 +2058,91 @@ class Controller extends ChangeNotifier {
 
   Future<DragItem?> buildDragItem(ShareItem s) async {
     final item = DragItem(localData: s.key, suggestedName: s.name);
+    try {
+      if (Platform.isWindows) {
+        final dragPath = await _materializeWindowsDragPath(s);
+        if (dragPath == null) return null;
+        item.add(
+          Formats.fileUri(
+            Uri.file(dragPath, windows: true),
+          ),
+        );
+        return item;
+      }
 
-    // Prefer native file-uri drag for local files; this avoids virtual-file
-    // provider edge cases with some drop targets (for example VS Code on Windows).
+      if (s.local) {
+        final path = s.path;
+        if (path == null || path.isEmpty) return null;
+        item.add(
+          Formats.fileUri(
+            Uri.file(path, windows: Platform.isWindows),
+          ),
+        );
+        return item;
+      }
+
+      if (!item.virtualFileSupported) return null;
+      item.addVirtualFile(
+        format: _fileFormat(s.name),
+        provider: (sinkProvider, progress) {
+          unawaited(_streamForDrag(s, sinkProvider, progress));
+        },
+      );
+      return item;
+    } catch (e, st) {
+      _diagnostics.warn(
+        'Failed to build drag item for ${s.name}',
+        error: e,
+        stack: st,
+      );
+      return null;
+    }
+  }
+
+  Future<String?> _materializeWindowsDragPath(ShareItem s) async {
     if (s.local) {
       final path = s.path;
       if (path == null || path.isEmpty) return null;
-      item.add(
-        Formats.fileUri(
-          Uri.file(path, windows: Platform.isWindows),
-        ),
-      );
-      return item;
+      return path;
     }
 
-    if (!item.virtualFileSupported) return null;
-    item.addVirtualFile(
-      format: _fileFormat(s.name),
-      provider: (sinkProvider, progress) {
-        unawaited(_streamForDrag(s, sinkProvider, progress));
-      },
-    );
-    return item;
+    final key = '${s.ownerId}:${s.itemId}';
+    final existingJob = _dragMaterializationInFlight[key];
+    if (existingJob != null) {
+      return existingJob;
+    }
+
+    final job = () async {
+      final appDir = await _appDataDir();
+      final dragDir = Directory(p.join(appDir.path, 'drag_cache'));
+      await dragDir.create(recursive: true);
+      final safeName = _safeFileName(s.name);
+      final targetPath = p.join(dragDir.path, '${s.ownerId}_${s.itemId}_$safeName');
+      final target = File(targetPath);
+      if (await target.exists()) {
+        final len = await target.length();
+        if (len == s.size) {
+          return target.path;
+        }
+      }
+      _diagnostics.info('Materializing remote drag file: ${s.name}');
+      await downloadRemoteToPath(s, target.path);
+      return target.path;
+    }();
+
+    _dragMaterializationInFlight[key] = job;
+    try {
+      return await job;
+    } catch (e, st) {
+      _diagnostics.warn(
+        'Failed to materialize remote drag file: ${s.name}',
+        error: e,
+        stack: st,
+      );
+      return null;
+    } finally {
+      _dragMaterializationInFlight.remove(key);
+    }
   }
 
   Future<void> downloadRemoteToPath(ShareItem item, String outputPath) async {
