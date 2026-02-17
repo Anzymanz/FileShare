@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:ffi' as ffi;
 import 'dart:io';
@@ -23,6 +24,15 @@ const int _transferPort = 40406;
 const String _discoveryMulticastGroup = '239.255.77.77';
 const String _tag = 'fileshare_lan_v2';
 const int _maxHeaderBytes = 5 * 1024 * 1024;
+const int _maxUdpDatagramBytes = 16 * 1024;
+const int _maxManifestItems = 5000;
+const int _maxItemNameChars = 260;
+const int _maxRelativePathChars = 1024;
+const int _maxPeerNameChars = 80;
+const int _maxPeerIdChars = 128;
+const int _maxIconBytes = 256 * 1024;
+const int _maxIconBase64Chars = 360 * 1024;
+const int _maxConcurrentInboundClients = 64;
 const Size _minWindowSize = Size(420, 280);
 const Size _defaultWindowSize = Size(900, 600);
 const Duration _announceInterval = Duration(milliseconds: 700);
@@ -1769,7 +1779,10 @@ class Controller extends ChangeNotifier {
   final Map<String, TransferEntry> _transfers = {};
   final Map<String, Timer> _transferDismissTimers = {};
   final Map<String, Future<String?>> _dragMaterializationInFlight = {};
+  final _SlidingRateLimiter _udpRateLimiter = _SlidingRateLimiter();
+  final _SlidingRateLimiter _tcpRateLimiter = _SlidingRateLimiter();
   int _transferCounter = 0;
+  int _activeInboundClients = 0;
   DateTime _lastTransferNotify = DateTime.fromMillisecondsSinceEpoch(0);
 
   int get connectedPeerCount {
@@ -1990,25 +2003,16 @@ class Controller extends ChangeNotifier {
       );
       try {
         await _sendManifestRequest(s);
-        final line = await _readLine(s);
-        final m = jsonDecode(line) as Map<String, dynamic>;
-        if (m['type'] != 'manifest') return 'Bad response';
-        final id = m['id'] as String? ?? '${addr.address}:$port';
-        final name = m['name'] as String? ?? addr.address;
-        final rev = (m['revision'] as num?)?.toInt() ?? 0;
-        final list = (m['items'] as List<dynamic>? ?? <dynamic>[])
-            .whereType<Map<String, dynamic>>()
-            .map((e) {
-              final iconBase64 = e['iconPngBase64'] as String?;
-              return RemoteItem(
-                id: e['id'] as String,
-                name: e['name'] as String,
-                rel: e['relativePath'] as String,
-                size: (e['size'] as num).toInt(),
-                iconBytes: iconBase64 == null ? null : base64Decode(iconBase64),
-              );
-            })
-            .toList(growable: false);
+        final manifest = await _readManifestFromSocket(
+          s,
+          fallbackId: '${addr.address}:$port',
+          fallbackName: addr.address,
+        );
+        if (manifest == null) return 'Bad response';
+        final id = manifest.id;
+        final name = manifest.name;
+        final rev = manifest.revision;
+        final list = manifest.items;
         final now = DateTime.now();
         final p = peers.putIfAbsent(
           id,
@@ -2359,25 +2363,39 @@ class Controller extends ChangeNotifier {
     Datagram? d;
     while ((d = _udp!.receive()) != null) {
       final g = d!;
+      final remoteIp = g.address.address;
+      if (g.data.length > _maxUdpDatagramBytes) {
+        continue;
+      }
+      if (
+          !_udpRateLimiter.allow(
+            'udp:$remoteIp',
+            maxEvents: 350,
+            window: const Duration(seconds: 5),
+          )) {
+        continue;
+      }
       try {
-        final map = jsonDecode(utf8.decode(g.data)) as Map<String, dynamic>;
+        final map = _decodeJsonMap(utf8.decode(g.data));
+        if (map == null) continue;
         if (map['tag'] != _tag) continue;
-        final type = map['type'] as String?;
+        final type = _safeString(map['type'], maxChars: 24);
+        if (type == null) continue;
         if (type == 'nudge') {
-          final id = map['id'] as String?;
+          final id = _safeString(map['id'], maxChars: _maxPeerIdChars);
           if (id != null) _applyNudgeFrom(id);
           continue;
         }
         if (type == 'probe') {
-          final id = map['id'] as String?;
+          final id = _safeString(map['id'], maxChars: _maxPeerIdChars);
           if (id != null && id != deviceId) {
             _sendPresenceTo(g.address);
           }
         }
-        final id = map['id'] as String?;
-        final name = map['name'] as String?;
-        final port = (map['port'] as num?)?.toInt();
-        final rev = (map['revision'] as num?)?.toInt() ?? 0;
+        final id = _safeString(map['id'], maxChars: _maxPeerIdChars);
+        final name = _safeString(map['name'], maxChars: _maxPeerNameChars);
+        final port = _safeInt(map['port'], min: 1, max: 65535);
+        final rev = _safeInt(map['revision'], min: 0, max: 0x7fffffff) ?? 0;
         if (id == null || name == null || port == null || id == deviceId) {
           continue;
         }
@@ -2456,36 +2474,23 @@ class Controller extends ChangeNotifier {
       );
       try {
         await _sendManifestRequest(s);
-        final line = await _readLine(s);
-        final m = jsonDecode(line) as Map<String, dynamic>;
-        if (m['type'] != 'manifest') return;
-        final name = m['name'] as String?;
-        final list = (m['items'] as List<dynamic>? ?? <dynamic>[])
-            .whereType<Map<String, dynamic>>()
-            .map((e) {
-              final iconBase64 = e['iconPngBase64'] as String?;
-              return RemoteItem(
-                id: e['id'] as String,
-                name: e['name'] as String,
-                rel: e['relativePath'] as String,
-                size: (e['size'] as num).toInt(),
-                iconBytes: iconBase64 == null ? null : base64Decode(iconBase64),
-              );
-            })
-            .toList(growable: false);
-        p0.rev = (m['revision'] as num?)?.toInt() ?? p0.rev;
-        if (name != null && name.isNotEmpty) {
-          p0.name = name;
-        }
+        final manifest = await _readManifestFromSocket(
+          s,
+          fallbackId: p0.id,
+          fallbackName: p0.name,
+        );
+        if (manifest == null) return;
+        p0.rev = manifest.revision;
+        p0.name = manifest.name;
         p0.lastSeen = DateTime.now();
         p0.lastGoodContact = DateTime.now();
-        final changed = !_sameRemoteItems(p0.items, list);
+        final changed = !_sameRemoteItems(p0.items, manifest.items);
         if (changed) {
           p0.items
             ..clear()
-            ..addAll(list);
+            ..addAll(manifest.items);
         }
-        peerStatus[p0.id] = 'OK (${list.length} items)';
+        peerStatus[p0.id] = 'OK (${manifest.items.length} items)';
         if (changed) {
           notifyListeners();
         }
@@ -2542,10 +2547,10 @@ class Controller extends ChangeNotifier {
     InternetAddress remoteAddress,
     Map<String, dynamic> req,
   ) {
-    final id = req['clientId'] as String?;
-    final name = req['clientName'] as String?;
-    final port = (req['clientPort'] as num?)?.toInt();
-    final rev = (req['clientRevision'] as num?)?.toInt() ?? 0;
+    final id = _safeString(req['clientId'], maxChars: _maxPeerIdChars);
+    final name = _safeString(req['clientName'], maxChars: _maxPeerNameChars);
+    final port = _safeInt(req['clientPort'], min: 1, max: 65535);
+    final rev = _safeInt(req['clientRevision'], min: 0, max: 0x7fffffff) ?? 0;
     if (id == null || name == null || port == null || id == deviceId) {
       return;
     }
@@ -2698,12 +2703,14 @@ class Controller extends ChangeNotifier {
       );
       try {
         await _sendManifestRequest(s);
-        final line = await _readLine(s);
-        final m = jsonDecode(line) as Map<String, dynamic>;
-        if (m['type'] != 'manifest') {
+        final line = await _readLine(s).timeout(const Duration(seconds: 4));
+        final m = _decodeJsonMap(line);
+        if (m == null || m['type'] != 'manifest') {
           return 'Bad response';
         }
-        final count = (m['items'] as List<dynamic>? ?? <dynamic>[]).length;
+        final count =
+            ((m['items'] as List<dynamic>? ?? const <dynamic>[]).length)
+                .clamp(0, _maxManifestItems);
         return 'OK ($count items)';
       } finally {
         await s.close();
@@ -2714,12 +2721,38 @@ class Controller extends ChangeNotifier {
   }
 
   Future<void> _onClient(Socket s) async {
+    final remoteIp = s.remoteAddress.address;
+    if (!_tcpRateLimiter.allow(
+      'tcp-conn:$remoteIp',
+      maxEvents: 120,
+      window: const Duration(seconds: 10),
+    )) {
+      await s.close();
+      return;
+    }
+    if (_activeInboundClients >= _maxConcurrentInboundClients) {
+      await s.close();
+      return;
+    }
+    _activeInboundClients++;
     try {
-      final req = jsonDecode(await _readLine(s)) as Map<String, dynamic>;
+      final line = await _readLine(s).timeout(const Duration(seconds: 5));
+      final req = _decodeJsonMap(line);
+      if (req == null) return;
       _learnPeerFromRequest(s.remoteAddress, req);
-      final type = req['type'] as String?;
+      final type = _safeString(req['type'], maxChars: 24);
+      if (type == null) return;
+      if (!_tcpRateLimiter.allow(
+        'tcp-req:$remoteIp:$type',
+        maxEvents: 200,
+        window: const Duration(seconds: 10),
+      )) {
+        return;
+      }
       if (type == 'nudge') {
-        final id = (req['id'] as String?) ?? (req['clientId'] as String?);
+        final id =
+            _safeString(req['id'], maxChars: _maxPeerIdChars) ??
+            _safeString(req['clientId'], maxChars: _maxPeerIdChars);
         if (id != null) {
           _applyNudgeFrom(id);
         }
@@ -2729,23 +2762,25 @@ class Controller extends ChangeNotifier {
         return;
       }
       if (type == 'manifest') {
+        final manifestItems = _local.values.take(_maxManifestItems).map((e) {
+          final iconBytes = e.iconBytes;
+          return {
+            'id': e.id,
+            'name': e.name,
+            'relativePath': e.rel,
+            'size': e.size,
+            'iconPngBase64': (iconBytes == null || iconBytes.length > _maxIconBytes)
+                ? null
+                : base64Encode(iconBytes),
+          };
+        }).toList(growable: false);
         s.write(
           jsonEncode({
             'type': 'manifest',
             'id': deviceId,
             'name': deviceName,
             'revision': revision,
-            'items': _local.values.map((e) {
-              return {
-                'id': e.id,
-                'name': e.name,
-                'relativePath': e.rel,
-                'size': e.size,
-                'iconPngBase64': e.iconBytes == null
-                    ? null
-                    : base64Encode(e.iconBytes!),
-              };
-            }).toList(),
+            'items': manifestItems,
           }),
         );
         s.write('\n');
@@ -2753,7 +2788,7 @@ class Controller extends ChangeNotifier {
         return;
       }
       if (type == 'download') {
-        final id = req['id'] as String?;
+        final id = _safeString(req['id'], maxChars: 256);
         if (id == null) return;
         final item = _local[id];
         if (item == null) {
@@ -2809,6 +2844,7 @@ class Controller extends ChangeNotifier {
       }
     } catch (_) {
     } finally {
+      _activeInboundClients = max(0, _activeInboundClients - 1);
       await s.close();
     }
   }
@@ -3012,6 +3048,110 @@ class Controller extends ChangeNotifier {
       if (b.length > _maxHeaderBytes) throw Exception('Header too large');
     }
     throw Exception('No newline');
+  }
+
+  Future<({String id, String name, int revision, List<RemoteItem> items})?>
+  _readManifestFromSocket(
+    Socket s, {
+    required String fallbackId,
+    required String fallbackName,
+  }) async {
+    final line = await _readLine(s).timeout(const Duration(seconds: 5));
+    final m = _decodeJsonMap(line);
+    if (m == null) return null;
+    return _parseManifestMap(
+      m,
+      fallbackId: fallbackId,
+      fallbackName: fallbackName,
+    );
+  }
+
+  ({String id, String name, int revision, List<RemoteItem> items})?
+  _parseManifestMap(
+    Map<String, dynamic> m, {
+    required String fallbackId,
+    required String fallbackName,
+  }) {
+    if (m['type'] != 'manifest') return null;
+    final id = _safeString(m['id'], maxChars: _maxPeerIdChars) ?? fallbackId;
+    final name =
+        _safeString(m['name'], maxChars: _maxPeerNameChars) ?? fallbackName;
+    final revision = _safeInt(m['revision'], min: 0, max: 0x7fffffff) ?? 0;
+    final rawItems = m['items'];
+    if (rawItems is! List) {
+      return (id: id, name: name, revision: revision, items: <RemoteItem>[]);
+    }
+    final items = <RemoteItem>[];
+    for (final raw in rawItems.take(_maxManifestItems)) {
+      if (raw is! Map) continue;
+      final map = <String, dynamic>{};
+      for (final entry in raw.entries) {
+        if (entry.key is String) {
+          map[entry.key as String] = entry.value;
+        }
+      }
+      final itemId = _safeString(map['id'], maxChars: 256);
+      final itemName = _safeString(map['name'], maxChars: _maxItemNameChars);
+      final relativePath = _safeString(
+        map['relativePath'],
+        maxChars: _maxRelativePathChars,
+      );
+      final size = _safeInt(map['size'], min: 0, max: 0x7fffffff);
+      if (itemId == null || itemName == null || relativePath == null || size == null) {
+        continue;
+      }
+      Uint8List? iconBytes;
+      final iconBase64 = map['iconPngBase64'];
+      if (iconBase64 is String && iconBase64.length <= _maxIconBase64Chars) {
+        try {
+          final decoded = base64Decode(iconBase64);
+          if (decoded.length <= _maxIconBytes) {
+            iconBytes = decoded;
+          }
+        } catch (_) {}
+      }
+      items.add(
+        RemoteItem(
+          id: itemId,
+          name: itemName,
+          rel: relativePath,
+          size: size,
+          iconBytes: iconBytes,
+        ),
+      );
+    }
+    return (id: id, name: name, revision: revision, items: items);
+  }
+
+  Map<String, dynamic>? _decodeJsonMap(String input) {
+    try {
+      final data = jsonDecode(input);
+      if (data is Map<String, dynamic>) return data;
+      if (data is Map) {
+        final out = <String, dynamic>{};
+        for (final entry in data.entries) {
+          if (entry.key is String) {
+            out[entry.key as String] = entry.value;
+          }
+        }
+        return out;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  String? _safeString(Object? value, {required int maxChars}) {
+    if (value is! String) return null;
+    final s = value.trim();
+    if (s.isEmpty || s.length > maxChars) return null;
+    return s;
+  }
+
+  int? _safeInt(Object? value, {required int min, required int max}) {
+    if (value is! num) return null;
+    final v = value.toInt();
+    if (v < min || v > max) return null;
+    return v;
   }
 
   Future<_Header> _readHeader(Socket s) async {
@@ -3421,6 +3561,31 @@ class _Diagnostics {
       await crashFile.writeAsString(content.toString(), flush: true);
       await _write('INFO', 'Crash report written: ${crashFile.path}');
     } catch (_) {}
+  }
+}
+
+class _SlidingRateLimiter {
+  final Map<String, ListQueue<int>> _eventsByKey = {};
+
+  bool allow(
+    String key, {
+    required int maxEvents,
+    required Duration window,
+  }) {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final cutoff = now - window.inMilliseconds;
+    final q = _eventsByKey.putIfAbsent(key, () => ListQueue<int>());
+    while (q.isNotEmpty && q.first < cutoff) {
+      q.removeFirst();
+    }
+    if (q.length >= maxEvents) {
+      return false;
+    }
+    q.addLast(now);
+    if (q.isEmpty) {
+      _eventsByKey.remove(key);
+    }
+    return true;
   }
 }
 
