@@ -33,6 +33,7 @@ const Duration _peerPruneAfter = Duration(seconds: 45);
 final bool _isTest =
     bool.fromEnvironment('FLUTTER_TEST') ||
     Platform.environment.containsKey('FLUTTER_TEST');
+final _Diagnostics _diagnostics = _Diagnostics();
 
 final ffi.DynamicLibrary _user32 = ffi.DynamicLibrary.open('user32.dll');
 
@@ -88,20 +89,35 @@ const List<_ThemePreset> _themePresets = [
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await windowManager.ensureInitialized();
-  final savedWindowState = await _loadWindowState();
-  final savedAppSettings = await _loadAppSettings();
+  await _diagnostics.initialize();
+  FlutterError.onError = (details) {
+    FlutterError.presentError(details);
+    _diagnostics.captureFlutterError(details);
+  };
+  ui.PlatformDispatcher.instance.onError = (error, stack) {
+    _diagnostics.captureUnhandledError('platform', error, stack);
+    return true;
+  };
 
-  await windowManager.waitUntilReadyToShow(
-    const WindowOptions(
-      minimumSize: _minWindowSize,
-      titleBarStyle: TitleBarStyle.hidden,
-      windowButtonVisibility: false,
-    ),
-  );
+  await runZonedGuarded(() async {
+    await windowManager.ensureInitialized();
+    final savedWindowState = await _loadWindowState();
+    final savedAppSettings = await _loadAppSettings();
 
-  runApp(MyApp(initialSettings: savedAppSettings));
-  unawaited(_restoreWindow(savedWindowState));
+    await windowManager.waitUntilReadyToShow(
+      const WindowOptions(
+        minimumSize: _minWindowSize,
+        titleBarStyle: TitleBarStyle.hidden,
+        windowButtonVisibility: false,
+      ),
+    );
+
+    runApp(MyApp(initialSettings: savedAppSettings));
+    _diagnostics.info('Application started');
+    unawaited(_restoreWindow(savedWindowState));
+  }, (error, stack) {
+    _diagnostics.captureUnhandledError('zone', error, stack);
+  });
 }
 
 Future<void> _restoreWindow(_WindowState? saved) async {
@@ -554,6 +570,7 @@ class _HomeState extends State<Home>
 
   Future<void> _quitApplication() async {
     _isQuitting = true;
+    _diagnostics.info('Application shutdown requested');
     await windowManager.setPreventClose(false);
     await windowManager.setSkipTaskbar(false);
     await _disposeTray();
@@ -1341,7 +1358,11 @@ class _IconTileState extends State<_IconTile> {
       upd();
       return item;
     } catch (e, st) {
-      debugPrint('Drag provider failed for ${widget.item.name}: $e\n$st');
+      _diagnostics.warn(
+        'Drag provider failed for ${widget.item.name}',
+        error: e,
+        stack: st,
+      );
       return null;
     }
   }
@@ -2725,13 +2746,21 @@ class Controller extends ChangeNotifier {
         await _streamRemote(it, sink, () => canceled);
       }
     } catch (e, st) {
-      debugPrint('Virtual drag stream failed for ${it.name}: $e\n$st');
+      _diagnostics.warn(
+        'Virtual drag stream failed for ${it.name}',
+        error: e,
+        stack: st,
+      );
     } finally {
       progress.onCancel.removeListener(onCancel);
       try {
         sink.close();
       } catch (e, st) {
-        debugPrint('Virtual drag sink close failed for ${it.name}: $e\n$st');
+        _diagnostics.warn(
+          'Virtual drag sink close failed for ${it.name}',
+          error: e,
+          stack: st,
+        );
       }
     }
   }
@@ -3103,22 +3132,16 @@ class AppSettings {
 }
 
 Future<File> _windowStateFile() async {
-  String? baseDir;
-  if (Platform.isWindows) {
-    baseDir = Platform.environment['APPDATA'];
-  } else {
-    baseDir =
-        Platform.environment['XDG_CONFIG_HOME'] ?? Platform.environment['HOME'];
-  }
-  final root = (baseDir == null || baseDir.isEmpty)
-      ? Directory.systemTemp.path
-      : baseDir;
-  final dir = Directory(p.join(root, 'FileShare'));
-  await dir.create(recursive: true);
+  final dir = await _appDataDir();
   return File(p.join(dir.path, 'window_state.json'));
 }
 
 Future<File> _appSettingsFile() async {
+  final dir = await _appDataDir();
+  return File(p.join(dir.path, 'settings.json'));
+}
+
+Future<Directory> _appDataDir() async {
   String? baseDir;
   if (Platform.isWindows) {
     baseDir = Platform.environment['APPDATA'];
@@ -3131,7 +3154,7 @@ Future<File> _appSettingsFile() async {
       : baseDir;
   final dir = Directory(p.join(root, 'FileShare'));
   await dir.create(recursive: true);
-  return File(p.join(dir.path, 'settings.json'));
+  return dir;
 }
 
 Future<_WindowState?> _loadWindowState() async {
@@ -3193,6 +3216,124 @@ Future<void> _saveAppSettings(AppSettings settings) async {
     final file = await _appSettingsFile();
     await file.writeAsString(jsonEncode(settings.toJson()), flush: true);
   } catch (_) {}
+}
+
+class _Diagnostics {
+  File? _logFile;
+  Directory? _crashDir;
+  Future<void> _writeChain = Future<void>.value();
+
+  Future<void> initialize() async {
+    final dir = await _appDataDir();
+    _logFile = File(p.join(dir.path, 'fileshare.log'));
+    _crashDir = Directory(p.join(dir.path, 'crashes'));
+    await _crashDir!.create(recursive: true);
+    await _write('INFO', 'Diagnostics initialized at ${dir.path}');
+  }
+
+  void info(String message) {
+    unawaited(_write('INFO', message));
+  }
+
+  void warn(String message, {Object? error, StackTrace? stack}) {
+    unawaited(_write('WARN', message, error: error, stack: stack));
+  }
+
+  void captureFlutterError(FlutterErrorDetails details) {
+    final context = details.context?.toDescription() ?? 'unknown';
+    final stack = details.stack ?? StackTrace.current;
+    captureUnhandledError(
+      'flutter',
+      details.exception,
+      stack,
+      context: context,
+      library: details.library,
+    );
+  }
+
+  void captureUnhandledError(
+    String source,
+    Object error,
+    StackTrace stack, {
+    String? context,
+    String? library,
+  }) {
+    unawaited(
+      _write(
+        'FATAL',
+        'Unhandled error from $source',
+        error: error,
+        stack: stack,
+      ),
+    );
+    unawaited(
+      _writeCrashReport(
+        source: source,
+        error: error,
+        stack: stack,
+        context: context,
+        library: library,
+      ),
+    );
+  }
+
+  Future<void> _write(
+    String level,
+    String message, {
+    Object? error,
+    StackTrace? stack,
+  }) async {
+    final file = _logFile;
+    if (file == null) return;
+    final line = StringBuffer()
+      ..write('[${DateTime.now().toIso8601String()}] [$level] ')
+      ..write(message);
+    if (error != null) {
+      line.write(' | error=$error');
+    }
+    if (stack != null) {
+      line.write('\n$stack');
+    }
+    line.write('\n');
+
+    _writeChain = _writeChain.then((_) async {
+      await file.writeAsString(
+        line.toString(),
+        mode: FileMode.writeOnlyAppend,
+        flush: true,
+      );
+    }).catchError((_) {});
+    await _writeChain;
+  }
+
+  Future<void> _writeCrashReport({
+    required String source,
+    required Object error,
+    required StackTrace stack,
+    String? context,
+    String? library,
+  }) async {
+    final crashDir = _crashDir;
+    if (crashDir == null) return;
+    final stamp = DateTime.now().toIso8601String().replaceAll(':', '-');
+    final crashFile = File(p.join(crashDir.path, 'crash_$stamp.txt'));
+    final content = StringBuffer()
+      ..writeln('FileShare Crash Report')
+      ..writeln('Timestamp: ${DateTime.now().toIso8601String()}')
+      ..writeln('Source: $source')
+      ..writeln('OS: ${Platform.operatingSystem} ${Platform.operatingSystemVersion}')
+      ..writeln('Dart: ${Platform.version}')
+      ..writeln('Context: ${context ?? 'n/a'}')
+      ..writeln('Library: ${library ?? 'n/a'}')
+      ..writeln('Error: $error')
+      ..writeln()
+      ..writeln('Stack trace:')
+      ..writeln(stack.toString());
+    try {
+      await crashFile.writeAsString(content.toString(), flush: true);
+      await _write('INFO', 'Crash report written: ${crashFile.path}');
+    } catch (_) {}
+  }
 }
 
 enum TransferDirection { download, upload }
