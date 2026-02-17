@@ -1322,16 +1322,28 @@ class _IconTileState extends State<_IconTile> {
   bool dragging = false;
 
   Future<DragItem?> _provider(DragItemRequest r) async {
-    final item = await widget.createItem(widget.item);
-    if (item == null) return null;
+    try {
+      final item = await widget.createItem(widget.item);
+      if (item == null) return null;
 
-    void upd() {
-      if (mounted) setState(() => dragging = r.session.dragging.value);
+      void upd() {
+        final isDragging = r.session.dragging.value;
+        if (mounted && dragging != isDragging) {
+          setState(() => dragging = isDragging);
+        }
+        if (!isDragging) {
+          // Remove this listener once the drag session ends.
+          r.session.dragging.removeListener(upd);
+        }
+      }
+
+      r.session.dragging.addListener(upd);
+      upd();
+      return item;
+    } catch (e, st) {
+      debugPrint('Drag provider failed for ${widget.item.name}: $e\n$st');
+      return null;
     }
-
-    r.session.dragging.addListener(upd);
-    upd();
-    return item;
   }
 
   @override
@@ -2712,10 +2724,15 @@ class Controller extends ChangeNotifier {
       } else {
         await _streamRemote(it, sink, () => canceled);
       }
-    } catch (_) {
+    } catch (e, st) {
+      debugPrint('Virtual drag stream failed for ${it.name}: $e\n$st');
     } finally {
       progress.onCancel.removeListener(onCancel);
-      sink.close();
+      try {
+        sink.close();
+      } catch (e, st) {
+        debugPrint('Virtual drag sink close failed for ${it.name}: $e\n$st');
+      }
     }
   }
 
