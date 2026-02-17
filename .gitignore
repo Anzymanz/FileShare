@@ -36,6 +36,9 @@ migrate_working_dir/
 /installer/Output/
 /installer/output/
 /notes/
+!/notes/
+/notes/*
+!/notes/changelog.md
 *.msi
 *.msix
 *.msixbundle
