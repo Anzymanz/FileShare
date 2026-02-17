@@ -1339,35 +1339,19 @@ class _IconTileState extends State<_IconTile> {
   bool dragging = false;
 
   Future<DragItem?> _provider(DragItemRequest r) async {
-    late VoidCallback upd;
+    void upd() {
+      final isDragging = r.session.dragging.value;
+      if (mounted && dragging != isDragging) {
+        setState(() => dragging = isDragging);
+      }
+      if (!isDragging) {
+        // Remove this listener once the drag session ends.
+        r.session.dragging.removeListener(upd);
+      }
+    }
     try {
-      final dragStarted = Completer<bool>();
-      upd = () {
-        final isDragging = r.session.dragging.value;
-        if (mounted && dragging != isDragging) {
-          setState(() => dragging = isDragging);
-        }
-        if (isDragging && !dragStarted.isCompleted) {
-          dragStarted.complete(true);
-        }
-      };
-
       r.session.dragging.addListener(upd);
       upd();
-
-      // Some targets can query drag providers without a real drag start.
-      // Only create drag payload after the session is actively dragging.
-      var started = r.session.dragging.value;
-      if (!started) {
-        started = await dragStarted.future.timeout(
-          const Duration(milliseconds: 300),
-          onTimeout: () => false,
-        );
-      }
-      if (!started) {
-        return null;
-      }
-
       final item = await widget.createItem(widget.item);
       if (item == null) return null;
       return item;
@@ -1378,10 +1362,6 @@ class _IconTileState extends State<_IconTile> {
         stack: st,
       );
       return null;
-    } finally {
-      try {
-        r.session.dragging.removeListener(upd);
-      } catch (_) {}
     }
   }
 
