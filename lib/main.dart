@@ -2047,6 +2047,20 @@ class Controller extends ChangeNotifier {
 
   Future<DragItem?> buildDragItem(ShareItem s) async {
     final item = DragItem(localData: s.key, suggestedName: s.name);
+
+    // Prefer native file-uri drag for local files; this avoids virtual-file
+    // provider edge cases with some drop targets (for example VS Code on Windows).
+    if (s.local) {
+      final path = s.path;
+      if (path == null || path.isEmpty) return null;
+      item.add(
+        Formats.fileUri(
+          Uri.file(path, windows: Platform.isWindows),
+        ),
+      );
+      return item;
+    }
+
     if (!item.virtualFileSupported) return null;
     item.addVirtualFile(
       format: _fileFormat(s.name),
