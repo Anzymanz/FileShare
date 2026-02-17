@@ -1339,23 +1339,37 @@ class _IconTileState extends State<_IconTile> {
   bool dragging = false;
 
   Future<DragItem?> _provider(DragItemRequest r) async {
+    late VoidCallback upd;
     try {
-      final item = await widget.createItem(widget.item);
-      if (item == null) return null;
-
-      void upd() {
+      final dragStarted = Completer<bool>();
+      upd = () {
         final isDragging = r.session.dragging.value;
         if (mounted && dragging != isDragging) {
           setState(() => dragging = isDragging);
         }
-        if (!isDragging) {
-          // Remove this listener once the drag session ends.
-          r.session.dragging.removeListener(upd);
+        if (isDragging && !dragStarted.isCompleted) {
+          dragStarted.complete(true);
         }
-      }
+      };
 
       r.session.dragging.addListener(upd);
       upd();
+
+      // Some targets can query drag providers without a real drag start.
+      // Only create drag payload after the session is actively dragging.
+      var started = r.session.dragging.value;
+      if (!started) {
+        started = await dragStarted.future.timeout(
+          const Duration(milliseconds: 300),
+          onTimeout: () => false,
+        );
+      }
+      if (!started) {
+        return null;
+      }
+
+      final item = await widget.createItem(widget.item);
+      if (item == null) return null;
       return item;
     } catch (e, st) {
       _diagnostics.warn(
@@ -1364,6 +1378,10 @@ class _IconTileState extends State<_IconTile> {
         stack: st,
       );
       return null;
+    } finally {
+      try {
+        r.session.dragging.removeListener(upd);
+      } catch (_) {}
     }
   }
 
@@ -2117,7 +2135,9 @@ class Controller extends ChangeNotifier {
       final dragDir = Directory(p.join(appDir.path, 'drag_cache'));
       await dragDir.create(recursive: true);
       final safeName = _safeFileName(s.name);
-      final targetPath = p.join(dragDir.path, '${s.ownerId}_${s.itemId}_$safeName');
+      final itemDir = Directory(p.join(dragDir.path, '${s.ownerId}_${s.itemId}'));
+      await itemDir.create(recursive: true);
+      final targetPath = p.join(itemDir.path, safeName);
       final target = File(targetPath);
       if (await target.exists()) {
         final len = await target.length();
