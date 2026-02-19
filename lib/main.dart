@@ -23,6 +23,8 @@ const int _discoveryPort = 40405;
 const int _transferPort = 40406;
 const String _discoveryMulticastGroup = '239.255.77.77';
 const String _tag = 'fileshare_lan_v2';
+const int _protocolMajor = 1;
+const int _protocolMinor = 0;
 const int _maxHeaderBytes = 5 * 1024 * 1024;
 const int _maxUdpDatagramBytes = 16 * 1024;
 const int _maxManifestItems = 5000;
@@ -791,6 +793,8 @@ class _HomeState extends State<Home>
   Future<void> _showSettings() async {
     final peers = c.peers.values.toList()
       ..sort((a, b) => a.name.compareTo(b.name));
+    final incompatible = c.incompatiblePeers.entries.toList()
+      ..sort((a, b) => a.key.compareTo(b.key));
     final localIpSummary = c.localIps.isEmpty
         ? 'Unavailable'
         : c.localIps.join(', ');
@@ -814,6 +818,7 @@ class _HomeState extends State<Home>
                   Text('Name: ${c.deviceName}'),
                   Text('IP: $localIpSummary'),
                   Text('Port: ${c.listenPort}'),
+                  Text('Protocol: $_protocolMajor.$_protocolMinor'),
                   SwitchListTile.adaptive(
                     dense: true,
                     contentPadding: EdgeInsets.zero,
@@ -901,7 +906,15 @@ class _HomeState extends State<Home>
                   Text('Peers Online: ${c.connectedPeerCount}'),
                   if (peers.isEmpty) const Text('No peers connected'),
                   for (final p in peers)
-                    Text('- ${p.name} | ${p.addr.address}:${p.port}'),
+                    Text(
+                      '- ${p.name} | ${p.addr.address}:${p.port}'
+                      '${c.peerStatus[p.id] == null ? '' : ' | ${c.peerStatus[p.id]}'}',
+                    ),
+                  if (incompatible.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    const Text('Incompatible Peers'),
+                    for (final entry in incompatible) Text('- ${entry.value}'),
+                  ],
                 ],
               ),
             ),
@@ -1775,6 +1788,7 @@ class Controller extends ChangeNotifier {
   final Map<String, Uint8List> _iconCache = {};
   final Map<String, String> peerHealth = {};
   final Map<String, String> peerStatus = {};
+  final Map<String, String> incompatiblePeers = {};
   final Map<String, DateTime> _lastNudgeFrom = {};
   final Map<String, TransferEntry> _transfers = {};
   final Map<String, Timer> _transferDismissTimers = {};
@@ -1914,6 +1928,8 @@ class Controller extends ChangeNotifier {
     final payloadMap = <String, dynamic>{
       'tag': _tag,
       'type': 'nudge',
+      'protocolMajor': _protocolMajor,
+      'protocolMinor': _protocolMinor,
       'id': deviceId,
       'name': deviceName,
       'clientId': deviceId,
@@ -1967,6 +1983,8 @@ class Controller extends ChangeNotifier {
     final payload = jsonEncode({
       'tag': _tag,
       'type': 'probe',
+      'protocolMajor': _protocolMajor,
+      'protocolMinor': _protocolMinor,
       'id': deviceId,
       'name': deviceName,
       'port': listenPort,
@@ -2003,11 +2021,17 @@ class Controller extends ChangeNotifier {
       );
       try {
         await _sendManifestRequest(s);
-        final manifest = await _readManifestFromSocket(
-          s,
-          fallbackId: '${addr.address}:$port',
-          fallbackName: addr.address,
-        );
+        ({String id, String name, int revision, List<RemoteItem> items})?
+        manifest;
+        try {
+          manifest = await _readManifestFromSocket(
+            s,
+            fallbackId: '${addr.address}:$port',
+            fallbackName: addr.address,
+          );
+        } on _ProtocolMismatchException catch (e) {
+          return 'Version mismatch: local $_protocolMajor.x, peer ${e.remoteMajor ?? 'unknown'}.x';
+        }
         if (manifest == null) return 'Bad response';
         final id = manifest.id;
         final name = manifest.name;
@@ -2319,6 +2343,8 @@ class Controller extends ChangeNotifier {
     final payload = jsonEncode({
       'tag': _tag,
       'type': 'presence',
+      'protocolMajor': _protocolMajor,
+      'protocolMinor': _protocolMinor,
       'id': deviceId,
       'name': deviceName,
       'port': listenPort,
@@ -2379,6 +2405,21 @@ class Controller extends ChangeNotifier {
         final map = _decodeJsonMap(utf8.decode(g.data));
         if (map == null) continue;
         if (map['tag'] != _tag) continue;
+        final incomingMajor = _safeInt(
+          map['protocolMajor'],
+          min: 0,
+          max: 0x7fffffff,
+        );
+        if (incomingMajor != _protocolMajor) {
+          final id = _safeString(map['id'], maxChars: _maxPeerIdChars);
+          final name = _safeString(map['name'], maxChars: _maxPeerNameChars);
+          final port = _safeInt(map['port'], min: 1, max: 65535);
+          final key = id ?? '${name ?? g.address.address}:${port ?? _discoveryPort}';
+          incompatiblePeers[key] =
+              '${name ?? g.address.address} (${g.address.address}:${port ?? _discoveryPort}) '
+              'uses protocol ${incomingMajor ?? 'unknown'}.x';
+          continue;
+        }
         final type = _safeString(map['type'], maxChars: 24);
         if (type == null) continue;
         if (type == 'nudge') {
@@ -2399,6 +2440,11 @@ class Controller extends ChangeNotifier {
         if (id == null || name == null || port == null || id == deviceId) {
           continue;
         }
+        _clearIncompatiblePeerHints(
+          peerId: id,
+          address: g.address.address,
+          port: port,
+        );
 
         final now = DateTime.now();
         final existed = peers.containsKey(id);
@@ -2474,11 +2520,20 @@ class Controller extends ChangeNotifier {
       );
       try {
         await _sendManifestRequest(s);
-        final manifest = await _readManifestFromSocket(
-          s,
-          fallbackId: p0.id,
-          fallbackName: p0.name,
-        );
+        ({String id, String name, int revision, List<RemoteItem> items})?
+        manifest;
+        try {
+          manifest = await _readManifestFromSocket(
+            s,
+            fallbackId: p0.id,
+            fallbackName: p0.name,
+          );
+        } on _ProtocolMismatchException catch (e) {
+          peerStatus[p0.id] =
+              'Version mismatch: local $_protocolMajor.x, peer ${e.remoteMajor ?? 'unknown'}.x';
+          notifyListeners();
+          return;
+        }
         if (manifest == null) return;
         p0.rev = manifest.revision;
         p0.name = manifest.name;
@@ -2533,6 +2588,8 @@ class Controller extends ChangeNotifier {
     s.write(
       jsonEncode({
         'type': 'manifest',
+        'protocolMajor': _protocolMajor,
+        'protocolMinor': _protocolMinor,
         'clientId': deviceId,
         'clientName': deviceName,
         'clientPort': listenPort,
@@ -2554,6 +2611,11 @@ class Controller extends ChangeNotifier {
     if (id == null || name == null || port == null || id == deviceId) {
       return;
     }
+    _clearIncompatiblePeerHints(
+      peerId: id,
+      address: remoteAddress.address,
+      port: port,
+    );
     final now = DateTime.now();
     final p = peers.putIfAbsent(
       id,
@@ -2708,6 +2770,14 @@ class Controller extends ChangeNotifier {
         if (m == null || m['type'] != 'manifest') {
           return 'Bad response';
         }
+        final incomingMajor = _safeInt(
+          m['protocolMajor'],
+          min: 0,
+          max: 0x7fffffff,
+        );
+        if (incomingMajor != _protocolMajor) {
+          return 'Version mismatch: ${incomingMajor ?? 'unknown'}.x';
+        }
         final count =
             ((m['items'] as List<dynamic>? ?? const <dynamic>[]).length)
                 .clamp(0, _maxManifestItems);
@@ -2739,6 +2809,23 @@ class Controller extends ChangeNotifier {
       final line = await _readLine(s).timeout(const Duration(seconds: 5));
       final req = _decodeJsonMap(line);
       if (req == null) return;
+      final incomingMajor = _safeInt(
+        req['protocolMajor'],
+        min: 0,
+        max: 0x7fffffff,
+      );
+      if (incomingMajor != _protocolMajor) {
+        s.write(
+          jsonEncode({
+            'type': 'error',
+            'message':
+                'Protocol mismatch. Local $_protocolMajor.x, peer ${incomingMajor ?? 'unknown'}.x',
+          }),
+        );
+        s.write('\n');
+        await s.flush();
+        return;
+      }
       _learnPeerFromRequest(s.remoteAddress, req);
       final type = _safeString(req['type'], maxChars: 24);
       if (type == null) return;
@@ -2777,6 +2864,8 @@ class Controller extends ChangeNotifier {
         s.write(
           jsonEncode({
             'type': 'manifest',
+            'protocolMajor': _protocolMajor,
+            'protocolMinor': _protocolMinor,
             'id': deviceId,
             'name': deviceName,
             'revision': revision,
@@ -2902,7 +2991,17 @@ class Controller extends ChangeNotifier {
       timeout: const Duration(seconds: 5),
     );
     try {
-      s.write(jsonEncode({'type': 'download', 'id': it.itemId}));
+      s.write(
+        jsonEncode({
+          'type': 'download',
+          'protocolMajor': _protocolMajor,
+          'protocolMinor': _protocolMinor,
+          'clientId': deviceId,
+          'clientName': deviceName,
+          'clientPort': listenPort,
+          'id': it.itemId,
+        }),
+      );
       s.write('\n');
       await s.flush();
       final h = await _readHeader(s);
@@ -3073,6 +3172,14 @@ class Controller extends ChangeNotifier {
     required String fallbackName,
   }) {
     if (m['type'] != 'manifest') return null;
+    final incomingMajor = _safeInt(
+      m['protocolMajor'],
+      min: 0,
+      max: 0x7fffffff,
+    );
+    if (incomingMajor != _protocolMajor) {
+      throw _ProtocolMismatchException(incomingMajor);
+    }
     final id = _safeString(m['id'], maxChars: _maxPeerIdChars) ?? fallbackId;
     final name =
         _safeString(m['name'], maxChars: _maxPeerNameChars) ?? fallbackName;
@@ -3152,6 +3259,22 @@ class Controller extends ChangeNotifier {
     final v = value.toInt();
     if (v < min || v > max) return null;
     return v;
+  }
+
+  void _clearIncompatiblePeerHints({
+    required String peerId,
+    required String address,
+    required int port,
+  }) {
+    incompatiblePeers.remove(peerId);
+    final endpoint = '$address:$port';
+    final removeKeys = incompatiblePeers.entries
+        .where((e) => e.key.contains(endpoint) || e.value.contains(endpoint))
+        .map((e) => e.key)
+        .toList(growable: false);
+    for (final key in removeKeys) {
+      incompatiblePeers.remove(key);
+    }
   }
 
   Future<_Header> _readHeader(Socket s) async {
@@ -3586,6 +3709,18 @@ class _SlidingRateLimiter {
       _eventsByKey.remove(key);
     }
     return true;
+  }
+}
+
+class _ProtocolMismatchException implements Exception {
+  _ProtocolMismatchException(this.remoteMajor);
+
+  final int? remoteMajor;
+
+  @override
+  String toString() {
+    return 'Protocol mismatch: local $_protocolMajor.x, '
+        'remote ${remoteMajor ?? 'unknown'}.x';
   }
 }
 
