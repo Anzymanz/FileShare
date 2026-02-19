@@ -294,6 +294,8 @@ class _HomeState extends State<Home>
   bool _isFocused = true;
   int _lastNudge = 0;
   int _lastRemoteCount = 0;
+  Set<String> _lastRemoteKeys = <String>{};
+  DateTime _lastRemoteToastAt = DateTime.fromMillisecondsSinceEpoch(0);
   bool _flash = false;
   bool _soundOnNudge = false;
   bool _minimizeToTray = false;
@@ -345,12 +347,49 @@ class _HomeState extends State<Home>
   }
 
   void _changed() {
-    final remoteCount = c.items.where((e) => !e.local).length;
+    final remoteItems = c.items.where((e) => !e.local).toList(growable: false);
+    final remoteCount = remoteItems.length;
     if (_isHiddenToTray && remoteCount > _lastRemoteCount) {
       unawaited(
         _showTrayNotification('FileShare', 'New file shared by a peer.'),
       );
     }
+    final remoteKeys = remoteItems.map((e) => e.key).toSet();
+    final added = remoteKeys.difference(_lastRemoteKeys).length;
+    final removed = _lastRemoteKeys.difference(remoteKeys).length;
+    final now = DateTime.now();
+    final canToast =
+        _isFocused &&
+        !_isHiddenToTray &&
+        now.difference(_lastRemoteToastAt) > const Duration(milliseconds: 1200);
+    if (canToast && mounted) {
+      if (added > 0) {
+        _lastRemoteToastAt = now;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            duration: const Duration(milliseconds: 1400),
+            content: Text(
+              added == 1
+                  ? '1 file added by peer'
+                  : '$added files added by peers',
+            ),
+          ),
+        );
+      } else if (removed > 0) {
+        _lastRemoteToastAt = now;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            duration: const Duration(milliseconds: 1400),
+            content: Text(
+              removed == 1
+                  ? '1 file removed by peer'
+                  : '$removed files removed by peers',
+            ),
+          ),
+        );
+      }
+    }
+    _lastRemoteKeys = remoteKeys;
     _lastRemoteCount = remoteCount;
 
     if (c.nudgeTick != _lastNudge) {
