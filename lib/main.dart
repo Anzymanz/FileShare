@@ -821,6 +821,10 @@ class _HomeState extends State<Home>
       ..sort((a, b) => a.name.compareTo(b.name));
     final incompatible = c.incompatiblePeers.entries.toList()
       ..sort((a, b) => a.key.compareTo(b.key));
+    final diagnostics = c.networkDiagnostics.entries
+        .where((e) => e.value > 0)
+        .toList(growable: false)
+      ..sort((a, b) => a.key.compareTo(b.key));
     final localIpSummary = c.localIps.isEmpty
         ? 'Unavailable'
         : c.localIps.join(', ');
@@ -960,6 +964,12 @@ class _HomeState extends State<Home>
                     const SizedBox(height: 8),
                     const Text('Incompatible Peers'),
                     for (final entry in incompatible) Text('- ${entry.value}'),
+                  ],
+                  if (diagnostics.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    const Text('Network Diagnostics'),
+                    for (final entry in diagnostics)
+                      Text('- ${entry.key}: ${entry.value}'),
                   ],
                 ],
               ),
@@ -1862,6 +1872,7 @@ class Controller extends ChangeNotifier {
   final Map<String, Future<String?>> _dragMaterializationInFlight = {};
   final _SlidingRateLimiter _udpRateLimiter = _SlidingRateLimiter();
   final _SlidingRateLimiter _tcpRateLimiter = _SlidingRateLimiter();
+  final Map<String, int> _networkDiagnostics = <String, int>{};
   int _transferCounter = 0;
   int _activeInboundClients = 0;
   DateTime _lastTransferNotify = DateTime.fromMillisecondsSinceEpoch(0);
@@ -1871,6 +1882,13 @@ class Controller extends ChangeNotifier {
 
   void setSharedRoomKey(String key) {
     _sharedRoomKey = key.trim();
+  }
+
+  Map<String, int> get networkDiagnostics =>
+      Map<String, int>.unmodifiable(_networkDiagnostics);
+
+  void _incDiagnostic(String key) {
+    _networkDiagnostics.update(key, (v) => v + 1, ifAbsent: () => 1);
   }
 
   int get connectedPeerCount {
@@ -2535,6 +2553,7 @@ class Controller extends ChangeNotifier {
       final g = d!;
       final remoteIp = g.address.address;
       if (g.data.length > _maxUdpDatagramBytes) {
+        _incDiagnostic('udp_oversize_drop');
         continue;
       }
       if (
@@ -2543,19 +2562,27 @@ class Controller extends ChangeNotifier {
             maxEvents: 350,
             window: const Duration(seconds: 5),
           )) {
+        _incDiagnostic('udp_rate_limited');
         continue;
       }
       try {
         final map = _decodeJsonMap(utf8.decode(g.data));
-        if (map == null) continue;
+        if (map == null) {
+          _incDiagnostic('udp_invalid_json');
+          continue;
+        }
         if (map['tag'] != _tag) continue;
-        if (!_verifyAuth(map)) continue;
+        if (!_verifyAuth(map)) {
+          _incDiagnostic('udp_auth_drop');
+          continue;
+        }
         final incomingMajor = _safeInt(
           map['protocolMajor'],
           min: 0,
           max: 0x7fffffff,
         );
         if (incomingMajor != _protocolMajor) {
+          _incDiagnostic('udp_protocol_mismatch');
           final id = _safeString(map['id'], maxChars: _maxPeerIdChars);
           final name = _safeString(map['name'], maxChars: _maxPeerNameChars);
           final port = _safeInt(map['port'], min: 1, max: 65535);
@@ -2951,10 +2978,12 @@ class Controller extends ChangeNotifier {
       maxEvents: 120,
       window: const Duration(seconds: 10),
     )) {
+      _incDiagnostic('tcp_conn_rate_limited');
       await s.close();
       return;
     }
     if (_activeInboundClients >= _maxConcurrentInboundClients) {
+      _incDiagnostic('tcp_conn_limit_drop');
       await s.close();
       return;
     }
@@ -2962,8 +2991,12 @@ class Controller extends ChangeNotifier {
     try {
       final line = await _readLine(s).timeout(const Duration(seconds: 5));
       final req = _decodeJsonMap(line);
-      if (req == null) return;
+      if (req == null) {
+        _incDiagnostic('tcp_invalid_json');
+        return;
+      }
       if (!_verifyAuth(req)) {
+        _incDiagnostic('tcp_auth_drop');
         return;
       }
       final incomingMajor = _safeInt(
@@ -2972,6 +3005,7 @@ class Controller extends ChangeNotifier {
         max: 0x7fffffff,
       );
       if (incomingMajor != _protocolMajor) {
+        _incDiagnostic('tcp_protocol_mismatch');
         s.write(
           jsonEncode({
             'type': 'error',
@@ -2991,6 +3025,7 @@ class Controller extends ChangeNotifier {
         maxEvents: 200,
         window: const Duration(seconds: 10),
       )) {
+        _incDiagnostic('tcp_req_rate_limited');
         return;
       }
       if (type == 'nudge') {
