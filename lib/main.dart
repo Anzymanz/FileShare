@@ -36,6 +36,9 @@ const int _maxPeerIdChars = 128;
 const int _maxIconBytes = 256 * 1024;
 const int _maxIconBase64Chars = 360 * 1024;
 const int _maxConcurrentInboundClients = 64;
+const int _dragCacheMaxBytes = 2 * 1024 * 1024 * 1024; // 2 GiB
+const Duration _dragCacheMaxAge = Duration(days: 7);
+const Duration _housekeepingInterval = Duration(minutes: 15);
 const Size _minWindowSize = Size(420, 280);
 const Size _defaultWindowSize = Size(900, 600);
 const Duration _announceInterval = Duration(milliseconds: 700);
@@ -1840,6 +1843,7 @@ class Controller extends ChangeNotifier {
   Timer? _announce;
   Timer? _refresh;
   Timer? _prune;
+  Timer? _housekeeping;
 
   int listenPort = 0;
   int revision = 0;
@@ -1960,8 +1964,13 @@ class Controller extends ChangeNotifier {
     _announce = Timer.periodic(_announceInterval, (_) => _broadcast());
     _refresh = Timer.periodic(_refreshInterval, (_) => refreshAll());
     _prune = Timer.periodic(_pruneInterval, (_) => _prunePeers());
+    _housekeeping = Timer.periodic(
+      _housekeepingInterval,
+      (_) => unawaited(_cleanupDragCache()),
+    );
 
     await _loadIps();
+    unawaited(_cleanupDragCache());
     _broadcast();
     notifyListeners();
   }
@@ -1971,6 +1980,7 @@ class Controller extends ChangeNotifier {
     _announce?.cancel();
     _refresh?.cancel();
     _prune?.cancel();
+    _housekeeping?.cancel();
     for (final timer in _transferDismissTimers.values) {
       timer.cancel();
     }
@@ -1978,6 +1988,44 @@ class Controller extends ChangeNotifier {
     _udp?.close();
     _tcp?.close();
     super.dispose();
+  }
+
+  Future<void> _cleanupDragCache() async {
+    try {
+      final appDir = await _appDataDir();
+      final dragDir = Directory(p.join(appDir.path, 'drag_cache'));
+      if (!await dragDir.exists()) return;
+      final now = DateTime.now();
+      final files = <FileSystemEntity>[];
+      int totalBytes = 0;
+      await for (final entity in dragDir.list(recursive: true, followLinks: false)) {
+        if (entity is! File) continue;
+        final stat = await entity.stat();
+        if (now.difference(stat.modified) > _dragCacheMaxAge) {
+          try {
+            await entity.delete();
+          } catch (_) {}
+          continue;
+        }
+        totalBytes += stat.size;
+        files.add(entity);
+      }
+
+      if (totalBytes <= _dragCacheMaxBytes) return;
+      files.sort((a, b) {
+        final sa = a.statSync();
+        final sb = b.statSync();
+        return sa.modified.compareTo(sb.modified);
+      });
+      for (final file in files) {
+        if (totalBytes <= _dragCacheMaxBytes) break;
+        try {
+          final len = await (file as File).length();
+          await file.delete();
+          totalBytes = max(0, totalBytes - len);
+        } catch (_) {}
+      }
+    } catch (_) {}
   }
 
   Future<void> addDropped(List<String> paths) async {
