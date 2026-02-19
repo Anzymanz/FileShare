@@ -505,7 +505,11 @@ class _HomeState extends State<Home>
   @override
   void onWindowMinimize() {
     _scheduleWindowSave();
-    if (_minimizeToTray) {
+    if (shouldHideToTrayOnMinimize(
+      minimizeToTray: _minimizeToTray,
+      isWindows: Platform.isWindows,
+      isQuitting: _isQuitting,
+    )) {
       unawaited(_hideToTray());
     }
   }
@@ -1142,6 +1146,19 @@ MinimizeAction resolveMinimizeAction({
     return MinimizeAction.hideToTray;
   }
   return MinimizeAction.minimizeWindow;
+}
+
+bool shouldHideToTrayOnMinimize({
+  required bool minimizeToTray,
+  required bool isWindows,
+  required bool isQuitting,
+}) {
+  if (isQuitting) return false;
+  return resolveMinimizeAction(
+        minimizeToTray: minimizeToTray,
+        isWindows: isWindows,
+      ) ==
+      MinimizeAction.hideToTray;
 }
 
 class SettingsButton extends StatefulWidget {

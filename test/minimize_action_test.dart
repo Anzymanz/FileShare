@@ -16,4 +16,31 @@ void main() {
       MinimizeAction.minimizeWindow,
     );
   });
+
+  test('shouldHideToTrayOnMinimize respects quitting state', () {
+    expect(
+      shouldHideToTrayOnMinimize(
+        minimizeToTray: true,
+        isWindows: true,
+        isQuitting: false,
+      ),
+      isTrue,
+    );
+    expect(
+      shouldHideToTrayOnMinimize(
+        minimizeToTray: true,
+        isWindows: true,
+        isQuitting: true,
+      ),
+      isFalse,
+    );
+    expect(
+      shouldHideToTrayOnMinimize(
+        minimizeToTray: true,
+        isWindows: false,
+        isQuitting: false,
+      ),
+      isFalse,
+    );
+  });
 }
