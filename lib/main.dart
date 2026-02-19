@@ -3755,6 +3755,8 @@ Future<void> _saveAppSettings(AppSettings settings) async {
 }
 
 class _Diagnostics {
+  static const int _maxLogBytes = 2 * 1024 * 1024;
+  static const int _maxLogBackups = 3;
   File? _logFile;
   Directory? _crashDir;
   Future<void> _writeChain = Future<void>.value();
@@ -3833,6 +3835,7 @@ class _Diagnostics {
     line.write('\n');
 
     _writeChain = _writeChain.then((_) async {
+      await _rotateLogsIfNeeded(file);
       await file.writeAsString(
         line.toString(),
         mode: FileMode.writeOnlyAppend,
@@ -3840,6 +3843,36 @@ class _Diagnostics {
       );
     }).catchError((_) {});
     await _writeChain;
+  }
+
+  Future<void> _rotateLogsIfNeeded(File file) async {
+    int length;
+    try {
+      length = await file.length();
+    } catch (_) {
+      return;
+    }
+    if (length < _maxLogBytes) return;
+
+    final base = file.path;
+    for (var i = _maxLogBackups; i >= 1; i--) {
+      final src = File(i == 1 ? base : '$base.${i - 1}');
+      if (!await src.exists()) continue;
+      final dst = File('$base.$i');
+      try {
+        if (await dst.exists()) {
+          await dst.delete();
+        }
+      } catch (_) {}
+      try {
+        await src.rename(dst.path);
+      } catch (_) {
+        try {
+          await src.copy(dst.path);
+          await src.delete();
+        } catch (_) {}
+      }
+    }
   }
 
   Future<void> _writeCrashReport({
