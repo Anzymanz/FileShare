@@ -2199,7 +2199,7 @@ class Controller extends ChangeNotifier {
         }
       }
       _diagnostics.info('Materializing remote drag file: ${s.name}');
-      await downloadRemoteToPath(s, target.path);
+      await downloadRemoteToPath(s, target.path, allowOverwrite: true);
       return target.path;
     }();
 
@@ -2218,13 +2218,24 @@ class Controller extends ChangeNotifier {
     }
   }
 
-  Future<void> downloadRemoteToPath(ShareItem item, String outputPath) async {
+  Future<void> downloadRemoteToPath(
+    ShareItem item,
+    String outputPath, {
+    bool allowOverwrite = false,
+  }) async {
     if (item.local) {
       throw Exception('Item is already local');
     }
-    final target = File(outputPath);
+    final normalizedPath = p.normalize(outputPath.trim());
+    if (normalizedPath.isEmpty || !p.isAbsolute(normalizedPath)) {
+      throw Exception('Invalid output path');
+    }
+    final target = File(normalizedPath);
     await target.parent.create(recursive: true);
-    final temp = File('$outputPath.fileshare.part');
+    if (!allowOverwrite && await target.exists()) {
+      throw Exception('Target file already exists');
+    }
+    final temp = File('${target.path}.fileshare.part');
     if (await temp.exists()) {
       await temp.delete();
     }
