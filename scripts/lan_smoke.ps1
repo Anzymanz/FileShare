@@ -7,6 +7,8 @@ param(
   [int]$SimLatencyMsB = 0,
   [int]$SimDropPercentA = 0,
   [int]$SimDropPercentB = 0,
+  [int]$ProtocolMajor = 1,
+  [int]$ProtocolMinor = 0,
   [switch]$RegressionChecks,
   [switch]$LeaveRunning
 )
@@ -34,6 +36,62 @@ function Start-FileShareInstance {
   $psi.EnvironmentVariables["FILESHARE_SIM_LATENCY_MS"] = $latency.ToString()
   $psi.EnvironmentVariables["FILESHARE_SIM_DROP_PERCENT"] = $drop.ToString()
   return [System.Diagnostics.Process]::Start($psi)
+}
+
+function Invoke-ManifestProbe {
+  param(
+    [string]$Host = "127.0.0.1",
+    [Parameter(Mandatory = $true)]
+    [int]$Port,
+    [Parameter(Mandatory = $true)]
+    [int]$ProbeIndex,
+    [int]$TimeoutMs = 2500
+  )
+
+  $client = [System.Net.Sockets.TcpClient]::new()
+  try {
+    $connect = $client.ConnectAsync($Host, $Port)
+    if (-not $connect.Wait($TimeoutMs)) {
+      return @{ ok = $false; message = "connect timeout" }
+    }
+    $stream = $client.GetStream()
+    $stream.ReadTimeout = $TimeoutMs
+    $stream.WriteTimeout = $TimeoutMs
+    $writer = [System.IO.StreamWriter]::new($stream, [System.Text.Encoding]::UTF8, 1024, $true)
+    $writer.NewLine = "`n"
+    $writer.AutoFlush = $true
+    $reader = [System.IO.StreamReader]::new($stream, [System.Text.Encoding]::UTF8, $false, 1024, $true)
+
+    $request = @{
+      type = "manifest"
+      protocolMajor = $ProtocolMajor
+      protocolMinor = $ProtocolMinor
+      clientId = "lan-smoke-$ProbeIndex"
+      clientName = "lan-smoke-$ProbeIndex"
+      clientPort = 65534
+      clientRevision = 0
+    } | ConvertTo-Json -Compress
+
+    $writer.WriteLine($request)
+    $line = $reader.ReadLine()
+    if ([string]::IsNullOrWhiteSpace($line)) {
+      return @{ ok = $false; message = "empty response" }
+    }
+    try {
+      $resp = $line | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+      return @{ ok = $false; message = "invalid json response" }
+    }
+    if ($resp.type -ne "manifest") {
+      return @{ ok = $false; message = "unexpected type '$($resp.type)'" }
+    }
+    $itemCount = @($resp.items).Count
+    return @{ ok = $true; message = "manifest OK ($itemCount items)" }
+  } catch {
+    return @{ ok = $false; message = $_.Exception.Message }
+  } finally {
+    if ($null -ne $client) { $client.Dispose() }
+  }
 }
 
 Write-Host "Starting LAN smoke harness for FileShare..."
@@ -71,6 +129,24 @@ if ($RegressionChecks) {
       Write-Host " - PID ${pid}: PASS (UDP+TCP listeners present)"
     } else {
       Write-Warning " - PID ${pid}: FAIL (UDP=$udpOk TCP=$tcpOk)"
+    }
+  }
+  $index = 0
+  foreach ($pid in $pids) {
+    $index++
+    $listener = $tcpByPid |
+      Where-Object { $_.OwningProcess -eq $pid } |
+      Sort-Object LocalPort |
+      Select-Object -First 1
+    if ($null -eq $listener) {
+      Write-Warning " - PID ${pid}: manifest probe skipped (no listener)"
+      continue
+    }
+    $result = Invoke-ManifestProbe -Port $listener.LocalPort -ProbeIndex $index
+    if ($result.ok) {
+      Write-Host " - PID ${pid}: PASS ($($result.message))"
+    } else {
+      Write-Warning " - PID ${pid}: FAIL manifest probe ($($result.message))"
     }
   }
 }
