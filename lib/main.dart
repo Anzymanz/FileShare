@@ -1085,6 +1085,7 @@ class _HomeState extends State<Home>
                   for (final p in peers)
                     Text(
                       '- ${p.name} | ${p.addr.address}:${p.port}'
+                      ' | ${_peerStateLabel(c.peerState(p))}'
                       '${c.peerStatus[p.id] == null ? '' : ' | ${c.peerStatus[p.id]}'}',
                     ),
                   if (incompatible.isNotEmpty) ...[
@@ -2224,6 +2225,19 @@ class Controller extends ChangeNotifier {
   bool get latencyProfilingEnabled => _latencyProfilingEnabled;
   Map<String, Duration> get peerFirstSyncLatency =>
       Map<String, Duration>.unmodifiable(_peerFirstSyncLatency);
+  PeerState peerState(Peer peer) {
+    final now = DateTime.now();
+    if (now.difference(peer.lastGoodContact) > const Duration(seconds: 12)) {
+      return PeerState.stale;
+    }
+    if (peer.fetching) {
+      return PeerState.syncing;
+    }
+    if (!peer.hasManifest) {
+      return PeerState.discovered;
+    }
+    return PeerState.reachable;
+  }
 
   void _incDiagnostic(String key) {
     _networkDiagnostics.update(key, (v) => v + 1, ifAbsent: () => 1);
@@ -3173,6 +3187,7 @@ class Controller extends ChangeNotifier {
         final now = DateTime.now();
         p0.lastSeen = now;
         p0.lastGoodContact = now;
+        p0.hasManifest = true;
         p0.recordFetchSuccess();
         if (_latencyProfilingEnabled &&
             !_peerFirstSyncLatency.containsKey(p0.id)) {
@@ -4283,6 +4298,19 @@ class AppSettings {
   }
 }
 
+String _peerStateLabel(PeerState state) {
+  switch (state) {
+    case PeerState.discovered:
+      return 'Discovered';
+    case PeerState.syncing:
+      return 'Syncing';
+    case PeerState.reachable:
+      return 'Reachable';
+    case PeerState.stale:
+      return 'Stale';
+  }
+}
+
 Future<File> _windowStateFile() async {
   final dir = await _appDataDir();
   return File(p.join(dir.path, 'window_state.json'));
@@ -4599,6 +4627,8 @@ class _TransferCanceledException implements Exception {
   String toString() => 'Transfer canceled';
 }
 
+enum PeerState { discovered, syncing, reachable, stale }
+
 enum TransferDirection { download, upload }
 
 enum TransferState { running, completed, failed, canceled }
@@ -4769,6 +4799,7 @@ class Peer {
   DateTime lastSeen;
   DateTime lastGoodContact;
   bool fetching = false;
+  bool hasManifest = false;
   DateTime lastFetch = DateTime.fromMillisecondsSinceEpoch(0);
   DateTime nextFetchAllowedAt = DateTime.fromMillisecondsSinceEpoch(0);
   int fetchFailureStreak = 0;
