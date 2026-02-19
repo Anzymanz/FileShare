@@ -29,6 +29,8 @@ const String _latestReleaseApiUrl =
     'https://api.github.com/repos/Anzymanz/FileShare/releases/latest';
 const String _latestReleasePageUrl =
     'https://github.com/Anzymanz/FileShare/releases/latest';
+const String _simLatencyEnv = 'FILESHARE_SIM_LATENCY_MS';
+const String _simDropEnv = 'FILESHARE_SIM_DROP_PERCENT';
 const int _protocolMajor = 1;
 const int _protocolMinor = 0;
 const int _maxHeaderBytes = 5 * 1024 * 1024;
@@ -2166,6 +2168,16 @@ class Controller extends ChangeNotifier {
   bool _autoUpdateChecks = false;
   String? latestReleaseTag;
   String? latestReleaseUrl;
+  final int _simulatedLatencyMs = max(
+    0,
+    int.tryParse(Platform.environment[_simLatencyEnv] ?? '') ?? 0,
+  );
+  final int _simulatedDropPercent = (int.tryParse(
+            Platform.environment[_simDropEnv] ?? '',
+          ) ??
+          0)
+      .clamp(0, 95);
+  final Random _simRandom = Random();
 
   String get sharedRoomKey => _sharedRoomKey;
 
@@ -2198,6 +2210,18 @@ class Controller extends ChangeNotifier {
 
   void _incDiagnostic(String key) {
     _networkDiagnostics.update(key, (v) => v + 1, ifAbsent: () => 1);
+  }
+
+  bool _shouldSimulateDrop(String channel) {
+    if (_simulatedDropPercent <= 0) return false;
+    if (_simRandom.nextInt(100) >= _simulatedDropPercent) return false;
+    _incDiagnostic('sim_drop_$channel');
+    return true;
+  }
+
+  Future<void> _simulateLatency() async {
+    if (_simulatedLatencyMs <= 0) return;
+    await Future<void>.delayed(Duration(milliseconds: _simulatedLatencyMs));
   }
 
   void setLatencyProfilingEnabled(bool enabled) {
@@ -2454,14 +2478,17 @@ class Controller extends ChangeNotifier {
     });
     final payloadBytes = utf8.encode(jsonEncode(payloadMap));
     for (final target in _broadcastTargets()) {
+      if (_shouldSimulateDrop('udp_out_nudge')) continue;
       u.send(payloadBytes, target, _discoveryPort);
     }
     if (multicastEnabled) {
+      if (!_shouldSimulateDrop('udp_out_nudge')) {
       u.send(
         payloadBytes,
         InternetAddress(_discoveryMulticastGroup),
         _discoveryPort,
       );
+      }
     }
 
     // Broadcast can be asymmetric on some LAN setups; also nudge peers directly.
@@ -2469,6 +2496,7 @@ class Controller extends ChangeNotifier {
     for (final p in peers.values) {
       final ip = p.addr.address;
       if (!sent.add(ip)) continue;
+      if (_shouldSimulateDrop('udp_out_nudge')) continue;
       u.send(payloadBytes, p.addr, _discoveryPort);
       unawaited(_sendNudgeTcp(p, payloadMap));
     }
@@ -2505,6 +2533,7 @@ class Controller extends ChangeNotifier {
       'port': listenPort,
       'revision': revision,
     }));
+    if (_shouldSimulateDrop('udp_out_probe')) return true;
     u.send(utf8.encode(payload), addr, port);
     return true;
   }
@@ -2529,6 +2558,10 @@ class Controller extends ChangeNotifier {
       return 'Invalid IP';
     }
     try {
+      if (_shouldSimulateDrop('tcp_out_connect')) {
+        return 'Simulated drop (tcp_out_connect)';
+      }
+      await _simulateLatency();
       final s = await Socket.connect(
         addr,
         port,
@@ -2940,11 +2973,14 @@ class Controller extends ChangeNotifier {
       'port': listenPort,
       'revision': revision,
     }));
+    if (_shouldSimulateDrop('udp_out_presence')) return;
     u.send(utf8.encode(payload), addr, _discoveryPort);
   }
 
   Future<void> _sendNudgeTcp(Peer peer, Map<String, dynamic> payload) async {
     try {
+      if (_shouldSimulateDrop('tcp_out_nudge')) return;
+      await _simulateLatency();
       final s = await Socket.connect(
         peer.addr,
         peer.port,
@@ -2982,6 +3018,9 @@ class Controller extends ChangeNotifier {
       final remoteIp = g.address.address;
       if (g.data.length > _maxUdpDatagramBytes) {
         _incDiagnostic('udp_oversize_drop');
+        continue;
+      }
+      if (_shouldSimulateDrop('udp_inbound')) {
         continue;
       }
       if (
@@ -3117,6 +3156,10 @@ class Controller extends ChangeNotifier {
     p0.lastFetch = DateTime.now();
     peerStatus[p0.id] = 'Fetching...';
     try {
+      if (_shouldSimulateDrop('tcp_out_fetch_manifest')) {
+        throw Exception('Simulated drop (tcp_out_fetch_manifest)');
+      }
+      await _simulateLatency();
       final s = await Socket.connect(
         p0.addr,
         p0.port,
@@ -3372,6 +3415,10 @@ class Controller extends ChangeNotifier {
 
   Future<String> _pingPeer(Peer p0) async {
     try {
+      if (_shouldSimulateDrop('tcp_out_ping')) {
+        return 'Simulated drop (tcp_out_ping)';
+      }
+      await _simulateLatency();
       final s = await Socket.connect(
         p0.addr,
         p0.port,
@@ -3406,6 +3453,10 @@ class Controller extends ChangeNotifier {
 
   Future<void> _onClient(Socket s) async {
     final remoteIp = s.remoteAddress.address;
+    if (_shouldSimulateDrop('tcp_inbound_accept')) {
+      await s.close();
+      return;
+    }
     if (!_tcpRateLimiter.allow(
       'tcp-conn:$remoteIp',
       maxEvents: 120,
@@ -3422,6 +3473,7 @@ class Controller extends ChangeNotifier {
     }
     _activeInboundClients++;
     try {
+      await _simulateLatency();
       final line = await _readLine(s).timeout(const Duration(seconds: 5));
       final req = _decodeJsonMap(line);
       if (req == null) {
@@ -3643,6 +3695,10 @@ class Controller extends ChangeNotifier {
   ) async {
     final peer = peers[it.peerId];
     if (peer == null) throw Exception('Peer not found');
+    if (_shouldSimulateDrop('tcp_out_download')) {
+      throw Exception('Simulated drop (tcp_out_download)');
+    }
+    await _simulateLatency();
     final s = await Socket.connect(
       peer.addr,
       peer.port,
