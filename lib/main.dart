@@ -1445,6 +1445,12 @@ class _ExplorerGrid extends StatelessWidget {
       builder: (context, constraints) {
         final tileWidth = 120.0;
         final columns = max(1, (constraints.maxWidth / tileWidth).floor());
+        final groups = <String, List<ShareItem>>{};
+        for (final item in items) {
+          groups.putIfAbsent(item.owner, () => <ShareItem>[]).add(item);
+        }
+        final orderedGroups = groups.entries.toList(growable: false)
+          ..sort((a, b) => a.key.compareTo(b.key));
         return TweenAnimationBuilder<double>(
           tween: Tween<double>(begin: 0, end: showGrid ? 0.06 : 0),
           duration: const Duration(milliseconds: 180),
@@ -1455,23 +1461,50 @@ class _ExplorerGrid extends StatelessWidget {
                   context,
                 ).colorScheme.onSurface.withValues(alpha: gridAlpha),
               ),
-              child: GridView.builder(
+              child: ListView.builder(
                 padding: const EdgeInsets.all(8),
-                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: columns,
-                  mainAxisSpacing: 8,
-                  crossAxisSpacing: 8,
-                  childAspectRatio: 0.9,
-                ),
-                itemCount: items.length,
-                itemBuilder: (context, index) {
-                  final item = items[index];
-                  return _IconTile(
-                    key: ValueKey(item.key),
-                    item: item,
-                    createItem: buildDragItem,
-                    onRemove: item.local ? () => onRemove(item) : null,
-                    onDownload: item.local ? null : () => onDownload(item),
+                itemCount: orderedGroups.length,
+                itemBuilder: (context, groupIndex) {
+                  final group = orderedGroups[groupIndex];
+                  final owner = group.key;
+                  final sectionItems = group.value;
+                  return Padding(
+                    padding: EdgeInsets.only(
+                      bottom: groupIndex == orderedGroups.length - 1 ? 0 : 12,
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(6, 2, 6, 8),
+                          child: Text(
+                            owner,
+                            style: Theme.of(context).textTheme.labelLarge,
+                          ),
+                        ),
+                        GridView.builder(
+                          shrinkWrap: true,
+                          physics: const NeverScrollableScrollPhysics(),
+                          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: columns,
+                            mainAxisSpacing: 8,
+                            crossAxisSpacing: 8,
+                            childAspectRatio: 0.9,
+                          ),
+                          itemCount: sectionItems.length,
+                          itemBuilder: (context, index) {
+                            final item = sectionItems[index];
+                            return _IconTile(
+                              key: ValueKey(item.key),
+                              item: item,
+                              createItem: buildDragItem,
+                              onRemove: item.local ? () => onRemove(item) : null,
+                              onDownload: item.local ? null : () => onDownload(item),
+                            );
+                          },
+                        ),
+                      ],
+                    ),
                   );
                 },
               ),
