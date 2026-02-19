@@ -24,6 +24,10 @@ const int _discoveryPort = 40405;
 const int _transferPort = 40406;
 const String _discoveryMulticastGroup = '239.255.77.77';
 const String _tag = 'fileshare_lan_v2';
+const String _latestReleaseApiUrl =
+    'https://api.github.com/repos/Anzymanz/FileShare/releases/latest';
+const String _latestReleasePageUrl =
+    'https://github.com/Anzymanz/FileShare/releases/latest';
 const int _protocolMajor = 1;
 const int _protocolMinor = 0;
 const int _maxHeaderBytes = 5 * 1024 * 1024;
@@ -176,6 +180,7 @@ class _MyAppState extends State<MyApp> {
   late bool soundOnNudge;
   late bool minimizeToTray;
   late String sharedRoomKey;
+  late bool autoUpdateChecks;
 
   @override
   void initState() {
@@ -188,6 +193,7 @@ class _MyAppState extends State<MyApp> {
     soundOnNudge = widget.initialSettings.soundOnNudge;
     minimizeToTray = widget.initialSettings.minimizeToTray;
     sharedRoomKey = widget.initialSettings.sharedRoomKey;
+    autoUpdateChecks = widget.initialSettings.autoUpdateChecks;
   }
 
   Future<void> _persistSettings() async {
@@ -198,6 +204,7 @@ class _MyAppState extends State<MyApp> {
         soundOnNudge: soundOnNudge,
         minimizeToTray: minimizeToTray,
         sharedRoomKey: sharedRoomKey,
+        autoUpdateChecks: autoUpdateChecks,
       ),
     );
   }
@@ -230,6 +237,7 @@ class _MyAppState extends State<MyApp> {
         initialSoundOnNudge: soundOnNudge,
         initialMinimizeToTray: minimizeToTray,
         initialSharedRoomKey: sharedRoomKey,
+        initialAutoUpdateChecks: autoUpdateChecks,
         onToggleTheme: () {
           setState(() => dark = !dark);
           unawaited(_persistSettings());
@@ -250,6 +258,10 @@ class _MyAppState extends State<MyApp> {
           setState(() => sharedRoomKey = value);
           unawaited(_persistSettings());
         },
+        onAutoUpdateChecksChanged: (value) {
+          setState(() => autoUpdateChecks = value);
+          unawaited(_persistSettings());
+        },
       ),
     );
   }
@@ -263,11 +275,13 @@ class Home extends StatefulWidget {
     required this.initialSoundOnNudge,
     required this.initialMinimizeToTray,
     required this.initialSharedRoomKey,
+    required this.initialAutoUpdateChecks,
     required this.onToggleTheme,
     required this.onSelectTheme,
     required this.onSoundOnNudgeChanged,
     required this.onMinimizeToTrayChanged,
     required this.onSharedRoomKeyChanged,
+    required this.onAutoUpdateChecksChanged,
   });
 
   final bool dark;
@@ -275,11 +289,13 @@ class Home extends StatefulWidget {
   final bool initialSoundOnNudge;
   final bool initialMinimizeToTray;
   final String initialSharedRoomKey;
+  final bool initialAutoUpdateChecks;
   final VoidCallback onToggleTheme;
   final ValueChanged<int> onSelectTheme;
   final ValueChanged<bool> onSoundOnNudgeChanged;
   final ValueChanged<bool> onMinimizeToTrayChanged;
   final ValueChanged<String> onSharedRoomKeyChanged;
+  final ValueChanged<bool> onAutoUpdateChecksChanged;
 
   @override
   State<Home> createState() => _HomeState();
@@ -300,6 +316,7 @@ class _HomeState extends State<Home>
   bool _soundOnNudge = false;
   bool _minimizeToTray = false;
   String _sharedRoomKey = '';
+  bool _autoUpdateChecks = false;
   bool _trayInitialized = false;
   bool _isHiddenToTray = false;
   bool _isQuitting = false;
@@ -314,7 +331,9 @@ class _HomeState extends State<Home>
     _minimizeToTray = widget.initialMinimizeToTray;
     _soundOnNudge = widget.initialSoundOnNudge;
     _sharedRoomKey = widget.initialSharedRoomKey;
+    _autoUpdateChecks = widget.initialAutoUpdateChecks;
     c.setSharedRoomKey(_sharedRoomKey);
+    c.setAutoUpdateChecks(_autoUpdateChecks);
     _nudgeAudioPlayer = AudioPlayer()..setReleaseMode(ReleaseMode.stop);
     _shakeController = AnimationController(
       vsync: this,
@@ -876,6 +895,8 @@ class _HomeState extends State<Home>
     String? probeStatus;
     bool sendingProbe = false;
     String? connectStatus;
+    String? updateStatus;
+    bool checkingUpdates = false;
     await showDialog<void>(
       context: context,
       builder: (_) => StatefulBuilder(
@@ -922,6 +943,50 @@ class _HomeState extends State<Home>
                       widget.onSoundOnNudgeChanged(value);
                     },
                   ),
+                  SwitchListTile.adaptive(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Auto update checks'),
+                    value: _autoUpdateChecks,
+                    onChanged: (value) {
+                      setDialogState(() => _autoUpdateChecks = value);
+                      c.setAutoUpdateChecks(value);
+                      widget.onAutoUpdateChecksChanged(value);
+                    },
+                  ),
+                  Row(
+                    children: [
+                      TextButton(
+                        onPressed: checkingUpdates
+                            ? null
+                            : () async {
+                                setDialogState(() {
+                                  checkingUpdates = true;
+                                  updateStatus = 'Checking for updates...';
+                                });
+                                final result = await c.checkForUpdates();
+                                if (!context.mounted) return;
+                                setDialogState(() {
+                                  checkingUpdates = false;
+                                  updateStatus = result;
+                                });
+                              },
+                        child: Text(
+                          checkingUpdates ? 'Checking...' : 'Check Updates',
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      if (c.latestReleaseUrl != null)
+                        TextButton(
+                          onPressed: () => unawaited(c.openLatestReleasePage()),
+                          child: const Text('Open Release'),
+                        ),
+                    ],
+                  ),
+                  if (updateStatus != null) ...[
+                    const SizedBox(height: 4),
+                    Text(updateStatus!),
+                  ],
                   const SizedBox(height: 8),
                   const Text('Manual Peer Connect'),
                   const SizedBox(height: 6),
@@ -2033,6 +2098,9 @@ class Controller extends ChangeNotifier {
   int _activeInboundClients = 0;
   DateTime _lastTransferNotify = DateTime.fromMillisecondsSinceEpoch(0);
   String _sharedRoomKey = '';
+  bool _autoUpdateChecks = false;
+  String? latestReleaseTag;
+  String? latestReleaseUrl;
 
   String get sharedRoomKey => _sharedRoomKey;
 
@@ -2040,11 +2108,57 @@ class Controller extends ChangeNotifier {
     _sharedRoomKey = key.trim();
   }
 
+  void setAutoUpdateChecks(bool value) {
+    _autoUpdateChecks = value;
+  }
+
   Map<String, int> get networkDiagnostics =>
       Map<String, int>.unmodifiable(_networkDiagnostics);
 
   void _incDiagnostic(String key) {
     _networkDiagnostics.update(key, (v) => v + 1, ifAbsent: () => 1);
+  }
+
+  Future<String> checkForUpdates() async {
+    try {
+      final client = HttpClient();
+      try {
+        final req = await client.getUrl(Uri.parse(_latestReleaseApiUrl));
+        req.headers.set(HttpHeaders.acceptHeader, 'application/vnd.github+json');
+        req.headers.set(HttpHeaders.userAgentHeader, 'FileShare');
+        final resp = await req.close().timeout(const Duration(seconds: 6));
+        if (resp.statusCode != 200) {
+          return 'Update check failed: HTTP ${resp.statusCode}';
+        }
+        final body = await utf8.decoder.bind(resp).join();
+        final map = _decodeJsonMap(body);
+        if (map == null) return 'Update check failed: bad response';
+        final tag = _safeString(map['tag_name'], maxChars: 64);
+        final url = _safeString(map['html_url'], maxChars: 512);
+        latestReleaseTag = tag;
+        latestReleaseUrl = url ?? _latestReleasePageUrl;
+        notifyListeners();
+        if (tag == null) return 'Latest release found';
+        return 'Latest release: $tag';
+      } finally {
+        client.close(force: true);
+      }
+    } catch (e) {
+      return 'Update check failed: $e';
+    }
+  }
+
+  Future<void> openLatestReleasePage() async {
+    final url = latestReleaseUrl ?? _latestReleasePageUrl;
+    if (Platform.isWindows) {
+      await Process.run('cmd', ['/c', 'start', '', url]);
+      return;
+    }
+    if (Platform.isMacOS) {
+      await Process.run('open', [url]);
+      return;
+    }
+    await Process.run('xdg-open', [url]);
   }
 
   bool _acquirePeerSlot(Map<String, int> slots, String key, int maxSlots) {
@@ -2162,6 +2276,9 @@ class Controller extends ChangeNotifier {
 
     await _loadIps();
     unawaited(_cleanupDragCache());
+    if (_autoUpdateChecks) {
+      unawaited(checkForUpdates());
+    }
     _broadcast();
     notifyListeners();
   }
@@ -3981,6 +4098,7 @@ class AppSettings {
     required this.soundOnNudge,
     this.minimizeToTray = false,
     this.sharedRoomKey = '',
+    this.autoUpdateChecks = false,
   });
 
   final bool darkMode;
@@ -3988,6 +4106,7 @@ class AppSettings {
   final bool soundOnNudge;
   final bool minimizeToTray;
   final String sharedRoomKey;
+  final bool autoUpdateChecks;
 
   Map<String, dynamic> toJson() => {
     'darkMode': darkMode,
@@ -3995,6 +4114,7 @@ class AppSettings {
     'soundOnNudge': soundOnNudge,
     'minimizeToTray': minimizeToTray,
     'sharedRoomKey': sharedRoomKey,
+    'autoUpdateChecks': autoUpdateChecks,
   };
 
   static AppSettings fromJson(Map<String, dynamic> json) {
@@ -4004,6 +4124,7 @@ class AppSettings {
       soundOnNudge: json['soundOnNudge'] == true,
       minimizeToTray: json['minimizeToTray'] == true,
       sharedRoomKey: (json['sharedRoomKey'] as String? ?? '').trim(),
+      autoUpdateChecks: json['autoUpdateChecks'] == true,
     );
   }
 }
@@ -4067,6 +4188,7 @@ Future<AppSettings> _loadAppSettings() async {
         soundOnNudge: false,
         minimizeToTray: false,
         sharedRoomKey: '',
+        autoUpdateChecks: false,
       );
     }
     final data = jsonDecode(await file.readAsString());
@@ -4077,6 +4199,7 @@ Future<AppSettings> _loadAppSettings() async {
         soundOnNudge: false,
         minimizeToTray: false,
         sharedRoomKey: '',
+        autoUpdateChecks: false,
       );
     }
     return AppSettings.fromJson(data);
@@ -4087,6 +4210,7 @@ Future<AppSettings> _loadAppSettings() async {
       soundOnNudge: false,
       minimizeToTray: false,
       sharedRoomKey: '',
+      autoUpdateChecks: false,
     );
   }
 }
