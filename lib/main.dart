@@ -2296,6 +2296,7 @@ class Controller extends ChangeNotifier {
     final now = DateTime.now();
     for (final p in peers.values.toList(growable: false)) {
       if (p.fetching) continue;
+      if (!p.canFetchAt(now)) continue;
       if (now.difference(p.lastFetch) < _minFetchInterval) continue;
       unawaited(_fetchManifest(p));
     }
@@ -2575,7 +2576,7 @@ class Controller extends ChangeNotifier {
 
         if (revChanged ||
             now.difference(p.lastFetch) > const Duration(seconds: 3)) {
-          unawaited(_fetchManifest(p));
+          unawaited(_fetchManifest(p, force: revChanged));
         }
         if (!existed ||
             nameChanged ||
@@ -2603,8 +2604,9 @@ class Controller extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> _fetchManifest(Peer p0) async {
+  Future<void> _fetchManifest(Peer p0, {bool force = false}) async {
     if (p0.fetching) return;
+    if (!force && !p0.canFetchAt(DateTime.now())) return;
     p0.fetching = true;
     p0.lastFetch = DateTime.now();
     peerStatus[p0.id] = 'Fetching...';
@@ -2635,6 +2637,7 @@ class Controller extends ChangeNotifier {
         p0.name = manifest.name;
         p0.lastSeen = DateTime.now();
         p0.lastGoodContact = DateTime.now();
+        p0.recordFetchSuccess();
         final changed = !_sameRemoteItems(p0.items, manifest.items);
         if (changed) {
           p0.items
@@ -2649,6 +2652,7 @@ class Controller extends ChangeNotifier {
         await s.close();
       }
     } catch (e) {
+      p0.recordFetchFailure();
       peerStatus[p0.id] = 'Fetch failed: $e';
       notifyListeners();
     } finally {
@@ -4078,6 +4082,23 @@ class Peer {
   DateTime lastGoodContact;
   bool fetching = false;
   DateTime lastFetch = DateTime.fromMillisecondsSinceEpoch(0);
+  DateTime nextFetchAllowedAt = DateTime.fromMillisecondsSinceEpoch(0);
+  int fetchFailureStreak = 0;
+
+  bool canFetchAt(DateTime now) => !now.isBefore(nextFetchAllowedAt);
+
+  void recordFetchSuccess() {
+    fetchFailureStreak = 0;
+    nextFetchAllowedAt = DateTime.fromMillisecondsSinceEpoch(0);
+  }
+
+  void recordFetchFailure() {
+    fetchFailureStreak = min(fetchFailureStreak + 1, 6);
+    final backoffMs = 300 * (1 << (fetchFailureStreak - 1));
+    nextFetchAllowedAt = DateTime.now().add(
+      Duration(milliseconds: backoffMs.clamp(300, 9600)),
+    );
+  }
 }
 
 class _Header {
