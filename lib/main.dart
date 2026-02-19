@@ -320,6 +320,7 @@ class _HomeState extends State<Home>
   bool _trayInitialized = false;
   bool _isHiddenToTray = false;
   bool _isQuitting = false;
+  String? _lastDownloadDirectory;
   Timer? _flashTimer;
   Timer? _windowSaveDebounce;
   late final AnimationController _shakeController;
@@ -451,11 +452,13 @@ class _HomeState extends State<Home>
             ),
           ];
     final location = await fs.getSaveLocation(
+      initialDirectory: _lastDownloadDirectory,
       suggestedName: suggestedName,
       acceptedTypeGroups: acceptedGroups,
       confirmButtonText: 'Download',
     );
     if (location == null) return;
+    _lastDownloadDirectory = p.dirname(location.path);
     try {
       await c.downloadRemoteToPath(item, location.path);
       if (!mounted) return;
