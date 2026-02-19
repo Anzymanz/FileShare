@@ -13,6 +13,7 @@ import 'package:ffi/ffi.dart';
 import 'package:file_selector/file_selector.dart' as fs;
 import 'package:flutter/material.dart';
 import 'package:local_notifier/local_notifier.dart';
+import 'package:fileshare/network_validation.dart' as nv;
 import 'package:path/path.dart' as p;
 import 'package:super_clipboard/super_clipboard.dart' as clip;
 import 'package:super_drag_and_drop/super_drag_and_drop.dart';
@@ -2111,55 +2112,11 @@ String _safeFileName(String name) {
 }
 
 bool _isValidRemoteFileName(String name) {
-  if (name.trim().isEmpty || name.length > _maxItemNameChars) return false;
-  if (RegExp(r'[\x00-\x1F]').hasMatch(name)) return false;
-  if (RegExp(r'[<>:"/\\|?*]').hasMatch(name)) return false;
-  return !_isReservedWindowsName(name);
+  return nv.isValidRemoteFileName(name, maxChars: _maxItemNameChars);
 }
 
 bool _isValidRelativePath(String rel) {
-  if (rel.trim().isEmpty || rel.length > _maxRelativePathChars) return false;
-  if (RegExp(r'[\x00-\x1F]').hasMatch(rel)) return false;
-  final normalized = rel.replaceAll('\\', '/');
-  if (normalized.startsWith('/') || normalized.contains('//')) return false;
-  if (normalized.split('/').any((segment) {
-    final s = segment.trim();
-    if (s.isEmpty || s == '.' || s == '..') return true;
-    return _isReservedWindowsName(s);
-  })) {
-    return false;
-  }
-  return true;
-}
-
-bool _isReservedWindowsName(String name) {
-  final base = name.split('.').first.trim().toUpperCase();
-  if (base.isEmpty) return true;
-  const reserved = <String>{
-    'CON',
-    'PRN',
-    'AUX',
-    'NUL',
-    'COM1',
-    'COM2',
-    'COM3',
-    'COM4',
-    'COM5',
-    'COM6',
-    'COM7',
-    'COM8',
-    'COM9',
-    'LPT1',
-    'LPT2',
-    'LPT3',
-    'LPT4',
-    'LPT5',
-    'LPT6',
-    'LPT7',
-    'LPT8',
-    'LPT9',
-  };
-  return reserved.contains(base);
+  return nv.isValidRelativePath(rel, maxChars: _maxRelativePathChars);
 }
 
 class Controller extends ChangeNotifier {
@@ -4060,13 +4017,7 @@ class Controller extends ChangeNotifier {
   }
 
   int _fastBytesFingerprint(Uint8List bytes) {
-    var hash = 0x811C9DC5;
-    for (final b in bytes) {
-      hash ^= b;
-      hash = (hash * 0x01000193) & 0xFFFFFFFF;
-    }
-    hash ^= bytes.length;
-    return hash & 0x7FFFFFFF;
+    return nv.fastBytesFingerprint(bytes);
   }
 
   void _clearIncompatiblePeerHints({
