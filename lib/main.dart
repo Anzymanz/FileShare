@@ -807,6 +807,7 @@ class _HomeState extends State<Home>
                           transfers: c.transfers,
                           onClearFinished: c.clearFinishedTransfers,
                           onCancelTransfer: c.cancelTransfer,
+                          onOpenTransferLocation: c.openTransferLocation,
                         ),
                       ),
                   ],
@@ -1565,11 +1566,13 @@ class _TransferPanel extends StatelessWidget {
     required this.transfers,
     required this.onClearFinished,
     required this.onCancelTransfer,
+    required this.onOpenTransferLocation,
   });
 
   final List<TransferEntry> transfers;
   final VoidCallback onClearFinished;
   final void Function(String transferId) onCancelTransfer;
+  final void Function(String transferId) onOpenTransferLocation;
 
   @override
   Widget build(BuildContext context) {
@@ -1631,6 +1634,7 @@ class _TransferPanel extends StatelessWidget {
                       return _TransferRow(
                         transfer: transfers[index],
                         onCancelTransfer: onCancelTransfer,
+                        onOpenTransferLocation: onOpenTransferLocation,
                       );
                     },
                   ),
@@ -1648,10 +1652,12 @@ class _TransferRow extends StatelessWidget {
   const _TransferRow({
     required this.transfer,
     required this.onCancelTransfer,
+    required this.onOpenTransferLocation,
   });
 
   final TransferEntry transfer;
   final void Function(String transferId) onCancelTransfer;
+  final void Function(String transferId) onOpenTransferLocation;
 
   @override
   Widget build(BuildContext context) {
@@ -1699,6 +1705,14 @@ class _TransferRow extends StatelessWidget {
                     visualDensity: VisualDensity.compact,
                     onPressed: () => onCancelTransfer(transfer.id),
                     icon: const Icon(Icons.close, size: 16),
+                  ),
+                if (transfer.state == TransferState.completed &&
+                    transfer.outputPath != null)
+                  IconButton(
+                    tooltip: 'Open containing folder',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () => onOpenTransferLocation(transfer.id),
+                    icon: const Icon(Icons.folder_open, size: 16),
                   ),
               ],
             ),
@@ -2406,9 +2420,15 @@ class Controller extends ChangeNotifier {
     if (await temp.exists()) {
       await temp.delete();
     }
+    String? transferId;
     final sink = temp.openWrite(mode: FileMode.writeOnly);
     try {
-      final completed = await _streamRemote(item, sink, () => false);
+      final completed = await _streamRemote(
+        item,
+        sink,
+        () => false,
+        onTransferStart: (id) => transferId = id,
+      );
       await sink.flush();
       await sink.close();
       if (!completed) {
@@ -2421,6 +2441,13 @@ class Controller extends ChangeNotifier {
         await target.delete();
       }
       await temp.rename(target.path);
+      if (transferId != null) {
+        final entry = _transfers[transferId!];
+        if (entry != null) {
+          entry.outputPath = target.path;
+          _notifyTransferListeners(force: true);
+        }
+      }
     } catch (e) {
       try {
         await sink.close();
@@ -2477,6 +2504,23 @@ class Controller extends ChangeNotifier {
     if (entry == null || entry.state != TransferState.running) return;
     _canceledTransfers.add(transferId);
     _finishTransfer(transferId, state: TransferState.canceled);
+  }
+
+  Future<void> openTransferLocation(String transferId) async {
+    final entry = _transfers[transferId];
+    final outputPath = entry?.outputPath;
+    if (outputPath == null || outputPath.isEmpty) return;
+    if (Platform.isWindows) {
+      await Process.run('explorer.exe', ['/select,', outputPath]);
+      return;
+    }
+    final file = File(outputPath);
+    final dirPath = file.parent.path;
+    if (Platform.isMacOS) {
+      await Process.run('open', [dirPath]);
+      return;
+    }
+    await Process.run('xdg-open', [dirPath]);
   }
 
   Future<bool> _addPath(String path) async {
@@ -3282,6 +3326,7 @@ class Controller extends ChangeNotifier {
     ShareItem it,
     EventSink sink,
     bool Function() canceled,
+    {void Function(String transferId)? onTransferStart}
   ) async {
     final peer = peers[it.peerId];
     if (peer == null) throw Exception('Peer not found');
@@ -3316,6 +3361,7 @@ class Controller extends ChangeNotifier {
         direction: TransferDirection.download,
         totalBytes: totalBytes,
       );
+      onTransferStart?.call(transferId);
       if (
           !_acquirePeerSlot(
             _activePeerDownloads,
@@ -4218,6 +4264,7 @@ class TransferEntry {
   double speedBytesPerSecond = 0;
   TransferState state = TransferState.running;
   String? error;
+  String? outputPath;
 
   DateTime _sampleAt;
   int _sampleBytes = 0;
