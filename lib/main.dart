@@ -36,6 +36,9 @@ const int _maxPeerIdChars = 128;
 const int _maxIconBytes = 256 * 1024;
 const int _maxIconBase64Chars = 360 * 1024;
 const int _maxConcurrentInboundClients = 64;
+const int _maxConcurrentTransfersPerPeer = 3;
+const int _perPeerUploadRateLimitBytesPerSecond = 50 * 1024 * 1024;
+const int _perPeerDownloadRateLimitBytesPerSecond = 50 * 1024 * 1024;
 const int _dragCacheMaxBytes = 2 * 1024 * 1024 * 1024; // 2 GiB
 const Duration _dragCacheMaxAge = Duration(days: 7);
 const Duration _housekeepingInterval = Duration(minutes: 15);
@@ -1924,6 +1927,10 @@ class Controller extends ChangeNotifier {
   final Map<String, Future<String?>> _dragMaterializationInFlight = {};
   final _SlidingRateLimiter _udpRateLimiter = _SlidingRateLimiter();
   final _SlidingRateLimiter _tcpRateLimiter = _SlidingRateLimiter();
+  final _PerPeerRateLimiter _uploadRateLimiter = _PerPeerRateLimiter();
+  final _PerPeerRateLimiter _downloadRateLimiter = _PerPeerRateLimiter();
+  final Map<String, int> _activePeerUploads = <String, int>{};
+  final Map<String, int> _activePeerDownloads = <String, int>{};
   final Map<String, int> _networkDiagnostics = <String, int>{};
   int _transferCounter = 0;
   int _activeInboundClients = 0;
@@ -1941,6 +1948,23 @@ class Controller extends ChangeNotifier {
 
   void _incDiagnostic(String key) {
     _networkDiagnostics.update(key, (v) => v + 1, ifAbsent: () => 1);
+  }
+
+  bool _acquirePeerSlot(Map<String, int> slots, String key, int maxSlots) {
+    final current = slots[key] ?? 0;
+    if (current >= maxSlots) return false;
+    slots[key] = current + 1;
+    return true;
+  }
+
+  void _releasePeerSlot(Map<String, int> slots, String key) {
+    final current = slots[key];
+    if (current == null) return;
+    if (current <= 1) {
+      slots.remove(key);
+      return;
+    }
+    slots[key] = current - 1;
   }
 
   int get connectedPeerCount {
@@ -3123,6 +3147,27 @@ class Controller extends ChangeNotifier {
       if (type == 'download') {
         final id = _safeString(req['id'], maxChars: 256);
         if (id == null) return;
+        final peerKey =
+            _safeString(req['clientId'], maxChars: _maxPeerIdChars) ?? remoteIp;
+        if (
+            !_acquirePeerSlot(
+              _activePeerUploads,
+              peerKey,
+              _maxConcurrentTransfersPerPeer,
+            )) {
+          _incDiagnostic('upload_peer_slot_reject');
+          s.write(
+            jsonEncode(
+              _withAuth({
+                'type': 'error',
+                'message': 'Too many concurrent uploads for this peer',
+              }),
+            ),
+          );
+          s.write('\n');
+          await s.flush();
+          return;
+        }
         final item = _local[id];
         if (item == null) {
           s.write(
@@ -3164,12 +3209,15 @@ class Controller extends ChangeNotifier {
           totalBytes: item.size,
         );
         try {
-          await s.addStream(
-            file.openRead().map((chunk) {
-              _addTransferProgress(transferId, chunk.length);
-              return chunk;
-            }),
-          );
+          await for (final chunk in file.openRead()) {
+            await _uploadRateLimiter.consume(
+              peerKey,
+              chunk.length,
+              _perPeerUploadRateLimitBytesPerSecond,
+            );
+            s.add(chunk);
+            _addTransferProgress(transferId, chunk.length);
+          }
           await s.flush();
           _finishTransfer(transferId, state: TransferState.completed);
         } catch (e) {
@@ -3179,6 +3227,8 @@ class Controller extends ChangeNotifier {
             error: e.toString(),
           );
           rethrow;
+        } finally {
+          _releasePeerSlot(_activePeerUploads, peerKey);
         }
       }
     } catch (_) {
@@ -3266,11 +3316,30 @@ class Controller extends ChangeNotifier {
         direction: TransferDirection.download,
         totalBytes: totalBytes,
       );
+      if (
+          !_acquirePeerSlot(
+            _activePeerDownloads,
+            peer.id,
+            _maxConcurrentTransfersPerPeer,
+          )) {
+        _incDiagnostic('download_peer_slot_reject');
+        _finishTransfer(
+          transferId,
+          state: TransferState.failed,
+          error: 'Too many concurrent downloads for this peer',
+        );
+        throw Exception('Too many concurrent downloads for this peer');
+      }
       try {
         var left = totalBytes;
         if (h.rem.isNotEmpty) {
           final n = min(left, h.rem.length);
           if (n > 0 && !canceled() && !_canceledTransfers.contains(transferId)) {
+            await _downloadRateLimiter.consume(
+              peer.id,
+              n,
+              _perPeerDownloadRateLimitBytesPerSecond,
+            );
             sink.add(h.rem.sublist(0, n));
             _addTransferProgress(transferId, n);
           }
@@ -3283,6 +3352,11 @@ class Controller extends ChangeNotifier {
           final chunk = h.it.current;
           final n = min(left, chunk.length);
           if (n > 0) {
+            await _downloadRateLimiter.consume(
+              peer.id,
+              n,
+              _perPeerDownloadRateLimitBytesPerSecond,
+            );
             sink.add(chunk.sublist(0, n));
             _addTransferProgress(transferId, n);
           }
@@ -3313,6 +3387,8 @@ class Controller extends ChangeNotifier {
           error: e.toString(),
         );
         rethrow;
+      } finally {
+        _releasePeerSlot(_activePeerDownloads, peer.id);
       }
     } finally {
       await s.close();
@@ -4066,6 +4142,36 @@ class _SlidingRateLimiter {
       _eventsByKey.remove(key);
     }
     return true;
+  }
+}
+
+class _PerPeerRateLimiter {
+  final Map<String, Future<void>> _chains = <String, Future<void>>{};
+  final Map<String, DateTime> _nextAllowedAt = <String, DateTime>{};
+
+  Future<void> consume(String peerKey, int bytes, int bytesPerSecond) {
+    if (bytes <= 0 || bytesPerSecond <= 0) {
+      return Future<void>.value();
+    }
+    final micros = ((bytes * 1000000) / bytesPerSecond).ceil();
+    final previous = _chains[peerKey] ?? Future<void>.value();
+    final completer = Completer<void>();
+    _chains[peerKey] = previous.then((_) async {
+      final now = DateTime.now();
+      final next = _nextAllowedAt[peerKey];
+      if (next != null && next.isAfter(now)) {
+        await Future<void>.delayed(next.difference(now));
+      }
+      _nextAllowedAt[peerKey] = DateTime.now().add(
+        Duration(microseconds: max(1, micros)),
+      );
+      completer.complete();
+    }).catchError((_) {
+      if (!completer.isCompleted) {
+        completer.complete();
+      }
+    });
+    return completer.future;
   }
 }
 
