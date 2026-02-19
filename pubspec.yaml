@@ -29,6 +29,7 @@ environment:
 # versions available, run `flutter pub outdated`.
 dependencies:
   audioplayers: ^6.5.1
+  crypto: ^3.0.6
   file_selector: ^1.1.0
   flutter:
     sdk: flutter

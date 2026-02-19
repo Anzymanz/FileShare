@@ -8,6 +8,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:audioplayers/audioplayers.dart';
+import 'package:crypto/crypto.dart' as crypto;
 import 'package:ffi/ffi.dart';
 import 'package:file_selector/file_selector.dart' as fs;
 import 'package:flutter/material.dart';
@@ -168,6 +169,7 @@ class _MyAppState extends State<MyApp> {
   late int themeIndex;
   late bool soundOnNudge;
   late bool minimizeToTray;
+  late String sharedRoomKey;
 
   @override
   void initState() {
@@ -179,6 +181,7 @@ class _MyAppState extends State<MyApp> {
     );
     soundOnNudge = widget.initialSettings.soundOnNudge;
     minimizeToTray = widget.initialSettings.minimizeToTray;
+    sharedRoomKey = widget.initialSettings.sharedRoomKey;
   }
 
   Future<void> _persistSettings() async {
@@ -188,6 +191,7 @@ class _MyAppState extends State<MyApp> {
         themeIndex: themeIndex,
         soundOnNudge: soundOnNudge,
         minimizeToTray: minimizeToTray,
+        sharedRoomKey: sharedRoomKey,
       ),
     );
   }
@@ -219,6 +223,7 @@ class _MyAppState extends State<MyApp> {
         themeIndex: themeIndex,
         initialSoundOnNudge: soundOnNudge,
         initialMinimizeToTray: minimizeToTray,
+        initialSharedRoomKey: sharedRoomKey,
         onToggleTheme: () {
           setState(() => dark = !dark);
           unawaited(_persistSettings());
@@ -235,6 +240,10 @@ class _MyAppState extends State<MyApp> {
           setState(() => minimizeToTray = value);
           unawaited(_persistSettings());
         },
+        onSharedRoomKeyChanged: (value) {
+          setState(() => sharedRoomKey = value);
+          unawaited(_persistSettings());
+        },
       ),
     );
   }
@@ -247,20 +256,24 @@ class Home extends StatefulWidget {
     required this.themeIndex,
     required this.initialSoundOnNudge,
     required this.initialMinimizeToTray,
+    required this.initialSharedRoomKey,
     required this.onToggleTheme,
     required this.onSelectTheme,
     required this.onSoundOnNudgeChanged,
     required this.onMinimizeToTrayChanged,
+    required this.onSharedRoomKeyChanged,
   });
 
   final bool dark;
   final int themeIndex;
   final bool initialSoundOnNudge;
   final bool initialMinimizeToTray;
+  final String initialSharedRoomKey;
   final VoidCallback onToggleTheme;
   final ValueChanged<int> onSelectTheme;
   final ValueChanged<bool> onSoundOnNudgeChanged;
   final ValueChanged<bool> onMinimizeToTrayChanged;
+  final ValueChanged<String> onSharedRoomKeyChanged;
 
   @override
   State<Home> createState() => _HomeState();
@@ -278,6 +291,7 @@ class _HomeState extends State<Home>
   bool _flash = false;
   bool _soundOnNudge = false;
   bool _minimizeToTray = false;
+  String _sharedRoomKey = '';
   bool _trayInitialized = false;
   bool _isHiddenToTray = false;
   bool _isQuitting = false;
@@ -291,6 +305,8 @@ class _HomeState extends State<Home>
     super.initState();
     _minimizeToTray = widget.initialMinimizeToTray;
     _soundOnNudge = widget.initialSoundOnNudge;
+    _sharedRoomKey = widget.initialSharedRoomKey;
+    c.setSharedRoomKey(_sharedRoomKey);
     _nudgeAudioPlayer = AudioPlayer()..setReleaseMode(ReleaseMode.stop);
     _shakeController = AnimationController(
       vsync: this,
@@ -799,6 +815,7 @@ class _HomeState extends State<Home>
         ? 'Unavailable'
         : c.localIps.join(', ');
     final probeController = TextEditingController();
+    final keyController = TextEditingController(text: _sharedRoomKey);
     String? probeStatus;
     bool sendingProbe = false;
     String? connectStatus;
@@ -819,6 +836,25 @@ class _HomeState extends State<Home>
                   Text('IP: $localIpSummary'),
                   Text('Port: ${c.listenPort}'),
                   Text('Protocol: $_protocolMajor.$_protocolMinor'),
+                  const SizedBox(height: 8),
+                  const Text('Room Key (optional)'),
+                  const SizedBox(height: 6),
+                  TextField(
+                    controller: keyController,
+                    obscureText: true,
+                    enableSuggestions: false,
+                    autocorrect: false,
+                    decoration: const InputDecoration(
+                      hintText: 'Shared key for trusted peers',
+                      isDense: true,
+                    ),
+                    onChanged: (value) {
+                      final normalized = value.trim();
+                      _sharedRoomKey = normalized;
+                      c.setSharedRoomKey(normalized);
+                      widget.onSharedRoomKeyChanged(normalized);
+                    },
+                  ),
                   SwitchListTile.adaptive(
                     dense: true,
                     contentPadding: EdgeInsets.zero,
@@ -928,6 +964,8 @@ class _HomeState extends State<Home>
         ),
       ),
     );
+    keyController.dispose();
+    probeController.dispose();
   }
 }
 
@@ -1798,6 +1836,13 @@ class Controller extends ChangeNotifier {
   int _transferCounter = 0;
   int _activeInboundClients = 0;
   DateTime _lastTransferNotify = DateTime.fromMillisecondsSinceEpoch(0);
+  String _sharedRoomKey = '';
+
+  String get sharedRoomKey => _sharedRoomKey;
+
+  void setSharedRoomKey(String key) {
+    _sharedRoomKey = key.trim();
+  }
 
   int get connectedPeerCount {
     final now = DateTime.now();
@@ -1925,7 +1970,7 @@ class Controller extends ChangeNotifier {
   void sendNudge() {
     final u = _udp;
     if (u == null) return;
-    final payloadMap = <String, dynamic>{
+    final payloadMap = _withAuth(<String, dynamic>{
       'tag': _tag,
       'type': 'nudge',
       'protocolMajor': _protocolMajor,
@@ -1936,7 +1981,7 @@ class Controller extends ChangeNotifier {
       'clientName': deviceName,
       'clientPort': listenPort,
       'clientRevision': revision,
-    };
+    });
     final payloadBytes = utf8.encode(jsonEncode(payloadMap));
     for (final target in _broadcastTargets()) {
       u.send(payloadBytes, target, _discoveryPort);
@@ -1980,7 +2025,7 @@ class Controller extends ChangeNotifier {
     } catch (_) {
       return false;
     }
-    final payload = jsonEncode({
+    final payload = jsonEncode(_withAuth({
       'tag': _tag,
       'type': 'probe',
       'protocolMajor': _protocolMajor,
@@ -1989,7 +2034,7 @@ class Controller extends ChangeNotifier {
       'name': deviceName,
       'port': listenPort,
       'revision': revision,
-    });
+    }));
     u.send(utf8.encode(payload), addr, port);
     return true;
   }
@@ -2340,7 +2385,7 @@ class Controller extends ChangeNotifier {
   void _sendPresenceTo(InternetAddress addr) {
     final u = _udp;
     if (u == null) return;
-    final payload = jsonEncode({
+    final payload = jsonEncode(_withAuth({
       'tag': _tag,
       'type': 'presence',
       'protocolMajor': _protocolMajor,
@@ -2349,7 +2394,7 @@ class Controller extends ChangeNotifier {
       'name': deviceName,
       'port': listenPort,
       'revision': revision,
-    });
+    }));
     u.send(utf8.encode(payload), addr, _discoveryPort);
   }
 
@@ -2405,6 +2450,7 @@ class Controller extends ChangeNotifier {
         final map = _decodeJsonMap(utf8.decode(g.data));
         if (map == null) continue;
         if (map['tag'] != _tag) continue;
+        if (!_verifyAuth(map)) continue;
         final incomingMajor = _safeInt(
           map['protocolMajor'],
           min: 0,
@@ -2586,7 +2632,7 @@ class Controller extends ChangeNotifier {
 
   Future<void> _sendManifestRequest(Socket s) async {
     s.write(
-      jsonEncode({
+      jsonEncode(_withAuth({
         'type': 'manifest',
         'protocolMajor': _protocolMajor,
         'protocolMinor': _protocolMinor,
@@ -2594,7 +2640,7 @@ class Controller extends ChangeNotifier {
         'clientName': deviceName,
         'clientPort': listenPort,
         'clientRevision': revision,
-      }),
+      })),
     );
     s.write('\n');
     await s.flush();
@@ -2809,6 +2855,9 @@ class Controller extends ChangeNotifier {
       final line = await _readLine(s).timeout(const Duration(seconds: 5));
       final req = _decodeJsonMap(line);
       if (req == null) return;
+      if (!_verifyAuth(req)) {
+        return;
+      }
       final incomingMajor = _safeInt(
         req['protocolMajor'],
         min: 0,
@@ -2862,7 +2911,7 @@ class Controller extends ChangeNotifier {
           };
         }).toList(growable: false);
         s.write(
-          jsonEncode({
+          jsonEncode(_withAuth({
             'type': 'manifest',
             'protocolMajor': _protocolMajor,
             'protocolMinor': _protocolMinor,
@@ -2870,7 +2919,7 @@ class Controller extends ChangeNotifier {
             'name': deviceName,
             'revision': revision,
             'items': manifestItems,
-          }),
+          })),
         );
         s.write('\n');
         await s.flush();
@@ -2881,7 +2930,11 @@ class Controller extends ChangeNotifier {
         if (id == null) return;
         final item = _local[id];
         if (item == null) {
-          s.write(jsonEncode({'type': 'error', 'message': 'File not found'}));
+          s.write(
+            jsonEncode(
+              _withAuth({'type': 'error', 'message': 'File not found'}),
+            ),
+          );
           s.write('\n');
           await s.flush();
           return;
@@ -2889,19 +2942,21 @@ class Controller extends ChangeNotifier {
         final file = File(item.path);
         if (!await file.exists()) {
           s.write(
-            jsonEncode({'type': 'error', 'message': 'Source file missing'}),
+            jsonEncode(
+              _withAuth({'type': 'error', 'message': 'Source file missing'}),
+            ),
           );
           s.write('\n');
           await s.flush();
           return;
         }
         s.write(
-          jsonEncode({
+          jsonEncode(_withAuth({
             'type': 'file',
             'name': item.name,
             'relativePath': item.rel,
             'size': item.size,
-          }),
+          })),
         );
         s.write('\n');
         await s.flush();
@@ -2992,7 +3047,7 @@ class Controller extends ChangeNotifier {
     );
     try {
       s.write(
-        jsonEncode({
+        jsonEncode(_withAuth({
           'type': 'download',
           'protocolMajor': _protocolMajor,
           'protocolMinor': _protocolMinor,
@@ -3000,12 +3055,13 @@ class Controller extends ChangeNotifier {
           'clientName': deviceName,
           'clientPort': listenPort,
           'id': it.itemId,
-        }),
+        })),
       );
       s.write('\n');
       await s.flush();
       final h = await _readHeader(s);
       final m = jsonDecode(h.line) as Map<String, dynamic>;
+      if (!_verifyAuth(m)) throw Exception('Peer authentication failed');
       if (m['type'] == 'error') throw Exception('Peer rejected transfer');
       if (m['type'] != 'file') throw Exception('Bad response');
       final totalBytes = (m['size'] as num).toInt();
@@ -3172,6 +3228,7 @@ class Controller extends ChangeNotifier {
     required String fallbackName,
   }) {
     if (m['type'] != 'manifest') return null;
+    if (!_verifyAuth(m)) return null;
     final incomingMajor = _safeInt(
       m['protocolMajor'],
       min: 0,
@@ -3259,6 +3316,59 @@ class Controller extends ChangeNotifier {
     final v = value.toInt();
     if (v < min || v > max) return null;
     return v;
+  }
+
+  Map<String, dynamic> _withAuth(Map<String, dynamic> payload) {
+    if (_sharedRoomKey.isEmpty) return payload;
+    final signed = Map<String, dynamic>.from(payload);
+    signed['auth'] = _computeAuthSignature(signed);
+    return signed;
+  }
+
+  bool _verifyAuth(Map<String, dynamic> payload) {
+    if (_sharedRoomKey.isEmpty) return true;
+    final auth = payload['auth'];
+    if (auth is! String || auth.isEmpty) return false;
+    final expected = _computeAuthSignature(payload);
+    return _constantTimeEquals(auth, expected);
+  }
+
+  String _computeAuthSignature(Map<String, dynamic> payload) {
+    final normalized = _normalizeForAuth(payload);
+    final digest = crypto.Hmac(
+      crypto.sha256,
+      utf8.encode(_sharedRoomKey),
+    ).convert(utf8.encode(jsonEncode(normalized)));
+    return digest.toString();
+  }
+
+  dynamic _normalizeForAuth(dynamic value) {
+    if (value is Map) {
+      final out = SplayTreeMap<String, dynamic>();
+      for (final entry in value.entries) {
+        final key = entry.key;
+        if (key is! String) continue;
+        if (key == 'auth') continue;
+        out[key] = _normalizeForAuth(entry.value);
+      }
+      return out;
+    }
+    if (value is List) {
+      return value.map(_normalizeForAuth).toList(growable: false);
+    }
+    if (value is num || value is String || value is bool || value == null) {
+      return value;
+    }
+    return value.toString();
+  }
+
+  bool _constantTimeEquals(String a, String b) {
+    if (a.length != b.length) return false;
+    var mismatch = 0;
+    for (var i = 0; i < a.length; i++) {
+      mismatch |= a.codeUnitAt(i) ^ b.codeUnitAt(i);
+    }
+    return mismatch == 0;
   }
 
   void _clearIncompatiblePeerHints({
@@ -3458,18 +3568,21 @@ class AppSettings {
     required this.themeIndex,
     required this.soundOnNudge,
     this.minimizeToTray = false,
+    this.sharedRoomKey = '',
   });
 
   final bool darkMode;
   final int themeIndex;
   final bool soundOnNudge;
   final bool minimizeToTray;
+  final String sharedRoomKey;
 
   Map<String, dynamic> toJson() => {
     'darkMode': darkMode,
     'themeIndex': themeIndex,
     'soundOnNudge': soundOnNudge,
     'minimizeToTray': minimizeToTray,
+    'sharedRoomKey': sharedRoomKey,
   };
 
   static AppSettings fromJson(Map<String, dynamic> json) {
@@ -3478,6 +3591,7 @@ class AppSettings {
       themeIndex: (json['themeIndex'] as num?)?.toInt() ?? 0,
       soundOnNudge: json['soundOnNudge'] == true,
       minimizeToTray: json['minimizeToTray'] == true,
+      sharedRoomKey: (json['sharedRoomKey'] as String? ?? '').trim(),
     );
   }
 }
@@ -3540,6 +3654,7 @@ Future<AppSettings> _loadAppSettings() async {
         themeIndex: 0,
         soundOnNudge: false,
         minimizeToTray: false,
+        sharedRoomKey: '',
       );
     }
     final data = jsonDecode(await file.readAsString());
@@ -3549,6 +3664,7 @@ Future<AppSettings> _loadAppSettings() async {
         themeIndex: 0,
         soundOnNudge: false,
         minimizeToTray: false,
+        sharedRoomKey: '',
       );
     }
     return AppSettings.fromJson(data);
@@ -3558,6 +3674,7 @@ Future<AppSettings> _loadAppSettings() async {
       themeIndex: 0,
       soundOnNudge: false,
       minimizeToTray: false,
+      sharedRoomKey: '',
     );
   }
 }
