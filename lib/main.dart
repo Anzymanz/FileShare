@@ -1559,6 +1559,8 @@ class _IconTile extends StatefulWidget {
 
 class _IconTileState extends State<_IconTile> {
   bool dragging = false;
+  static const int _menuDownloadAs = 1;
+  static const int _menuRemove = 2;
 
   Future<DragItem?> _provider(DragItemRequest r) async {
     void upd() {
@@ -1587,6 +1589,44 @@ class _IconTileState extends State<_IconTile> {
     }
   }
 
+  Future<void> _showContextMenu(TapDownDetails details) async {
+    final overlay = Overlay.of(context).context.findRenderObject() as RenderBox?;
+    if (overlay == null) return;
+    final selected = await showMenu<int>(
+      context: context,
+      position: RelativeRect.fromRect(
+        Rect.fromLTWH(
+          details.globalPosition.dx,
+          details.globalPosition.dy,
+          1,
+          1,
+        ),
+        Offset.zero & overlay.size,
+      ),
+      items: [
+        if (widget.onDownload != null)
+          const PopupMenuItem<int>(
+            value: _menuDownloadAs,
+            child: Text('Download As...'),
+          ),
+        if (widget.onRemove != null)
+          const PopupMenuItem<int>(
+            value: _menuRemove,
+            child: Text('Remove'),
+          ),
+      ],
+    );
+    if (!mounted || selected == null) return;
+    switch (selected) {
+      case _menuDownloadAs:
+        await widget.onDownload?.call();
+        break;
+      case _menuRemove:
+        widget.onRemove?.call();
+        break;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -1606,9 +1646,12 @@ class _IconTileState extends State<_IconTile> {
             message:
                 '${widget.item.rel}\n${_fmt(widget.item.size)} • ${widget.item.owner}',
             waitDuration: const Duration(milliseconds: 500),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onSecondaryTapDown: _showContextMenu,
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
                 Stack(
                   children: [
                     Container(
@@ -1733,7 +1776,8 @@ class _IconTileState extends State<_IconTile> {
                         ),
                     ],
                   ),
-              ],
+                ],
+              ),
             ),
           ),
         ),
