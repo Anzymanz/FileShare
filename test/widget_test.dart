@@ -1,5 +1,6 @@
 import 'package:fileshare/main.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -59,5 +60,118 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(toggleCalls, 1);
+  });
+
+  testWidgets('remote icon tile context menu triggers Download As', (
+    WidgetTester tester,
+  ) async {
+    var downloadCalls = 0;
+    final item = ShareItem(
+      ownerId: 'peer-a',
+      owner: 'Peer A',
+      itemId: 'item-1',
+      name: 'example.txt',
+      rel: 'example.txt',
+      size: 123,
+      local: false,
+      path: null,
+      iconBytes: null,
+      peerId: 'peer-a',
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: SizedBox(
+              width: 180,
+              height: 180,
+              child: IconTile(
+                item: item,
+                createItem: (_) async => null,
+                onRemove: null,
+                onDownload: () async => downloadCalls++,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(
+      find.byWidgetPredicate((w) => w.runtimeType.toString() == 'DraggableWidget'),
+      findsOneWidget,
+    );
+
+    final center = tester.getCenter(find.byType(IconTile));
+    final gesture = await tester.createGesture(
+      kind: PointerDeviceKind.mouse,
+      buttons: kSecondaryMouseButton,
+    );
+    await gesture.addPointer(location: center);
+    await tester.pump();
+    await gesture.down(center);
+    await tester.pumpAndSettle();
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    expect(find.text('Download As...'), findsOneWidget);
+    await tester.tap(find.text('Download As...'));
+    await tester.pumpAndSettle();
+    expect(downloadCalls, 1);
+  });
+
+  testWidgets('local icon tile context menu triggers Remove', (
+    WidgetTester tester,
+  ) async {
+    var removeCalls = 0;
+    final item = ShareItem(
+      ownerId: 'local',
+      owner: 'This PC',
+      itemId: 'item-2',
+      name: 'local.txt',
+      rel: 'local.txt',
+      size: 64,
+      local: true,
+      path: r'C:\tmp\local.txt',
+      iconBytes: null,
+      peerId: null,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: SizedBox(
+              width: 180,
+              height: 180,
+              child: IconTile(
+                item: item,
+                createItem: (_) async => null,
+                onRemove: () => removeCalls++,
+                onDownload: null,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final center = tester.getCenter(find.byType(IconTile));
+    final gesture = await tester.createGesture(
+      kind: PointerDeviceKind.mouse,
+      buttons: kSecondaryMouseButton,
+    );
+    await gesture.addPointer(location: center);
+    await tester.pump();
+    await gesture.down(center);
+    await tester.pumpAndSettle();
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    expect(find.text('Remove'), findsOneWidget);
+    await tester.tap(find.text('Remove'));
+    await tester.pumpAndSettle();
+    expect(removeCalls, 1);
   });
 }

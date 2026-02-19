@@ -682,7 +682,11 @@ class _HomeState extends State<Home>
   }
 
   Future<void> _onMinimizePressed() async {
-    if (_minimizeToTray) {
+    final action = resolveMinimizeAction(
+      minimizeToTray: _minimizeToTray,
+      isWindows: Platform.isWindows,
+    );
+    if (action == MinimizeAction.hideToTray) {
       await _hideToTray();
       return;
     }
@@ -1128,6 +1132,18 @@ class _HomeState extends State<Home>
   }
 }
 
+enum MinimizeAction { minimizeWindow, hideToTray }
+
+MinimizeAction resolveMinimizeAction({
+  required bool minimizeToTray,
+  required bool isWindows,
+}) {
+  if (minimizeToTray && isWindows) {
+    return MinimizeAction.hideToTray;
+  }
+  return MinimizeAction.minimizeWindow;
+}
+
 class SettingsButton extends StatefulWidget {
   const SettingsButton({
     super.key,
@@ -1526,7 +1542,7 @@ class _ExplorerGrid extends StatelessWidget {
                           itemCount: sectionItems.length,
                           itemBuilder: (context, index) {
                             final item = sectionItems[index];
-                            return _IconTile(
+                            return IconTile(
                               key: ValueKey(item.key),
                               item: item,
                               createItem: buildDragItem,
@@ -1571,8 +1587,8 @@ class _ExplorerGridPainter extends CustomPainter {
   }
 }
 
-class _IconTile extends StatefulWidget {
-  const _IconTile({
+class IconTile extends StatefulWidget {
+  const IconTile({
     super.key,
     required this.item,
     required this.createItem,
@@ -1586,10 +1602,10 @@ class _IconTile extends StatefulWidget {
   final Future<void> Function()? onDownload;
 
   @override
-  State<_IconTile> createState() => _IconTileState();
+  State<IconTile> createState() => _IconTileState();
 }
 
-class _IconTileState extends State<_IconTile> {
+class _IconTileState extends State<IconTile> {
   bool dragging = false;
   static const int _menuDownloadAs = 1;
   static const int _menuRemove = 2;
