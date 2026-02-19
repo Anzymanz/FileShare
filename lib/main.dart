@@ -400,6 +400,12 @@ class _HomeState extends State<Home>
       ).showSnackBar(SnackBar(content: Text('Downloaded $suggestedName')));
     } catch (e) {
       if (!mounted) return;
+      if (e is _TransferCanceledException) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Download canceled')));
+        return;
+      }
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('Download failed: $e')));
@@ -794,6 +800,7 @@ class _HomeState extends State<Home>
                         child: _TransferPanel(
                           transfers: c.transfers,
                           onClearFinished: c.clearFinishedTransfers,
+                          onCancelTransfer: c.cancelTransfer,
                         ),
                       ),
                   ],
@@ -1541,10 +1548,12 @@ class _TransferPanel extends StatelessWidget {
   const _TransferPanel({
     required this.transfers,
     required this.onClearFinished,
+    required this.onCancelTransfer,
   });
 
   final List<TransferEntry> transfers;
   final VoidCallback onClearFinished;
+  final void Function(String transferId) onCancelTransfer;
 
   @override
   Widget build(BuildContext context) {
@@ -1603,7 +1612,10 @@ class _TransferPanel extends StatelessWidget {
                     itemCount: transfers.length,
                     separatorBuilder: (_, __) => const SizedBox(height: 8),
                     itemBuilder: (context, index) {
-                      return _TransferRow(transfer: transfers[index]);
+                      return _TransferRow(
+                        transfer: transfers[index],
+                        onCancelTransfer: onCancelTransfer,
+                      );
                     },
                   ),
                 ),
@@ -1617,9 +1629,13 @@ class _TransferPanel extends StatelessWidget {
 }
 
 class _TransferRow extends StatelessWidget {
-  const _TransferRow({required this.transfer});
+  const _TransferRow({
+    required this.transfer,
+    required this.onCancelTransfer,
+  });
 
   final TransferEntry transfer;
+  final void Function(String transferId) onCancelTransfer;
 
   @override
   Widget build(BuildContext context) {
@@ -1660,6 +1676,14 @@ class _TransferRow extends StatelessWidget {
                   _transferStateLabel(transfer.state),
                   style: theme.textTheme.labelSmall,
                 ),
+                if (transfer.state == TransferState.running &&
+                    transfer.direction == TransferDirection.download)
+                  IconButton(
+                    tooltip: 'Cancel transfer',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () => onCancelTransfer(transfer.id),
+                    icon: const Icon(Icons.close, size: 16),
+                  ),
               ],
             ),
             const SizedBox(height: 4),
@@ -1830,6 +1854,7 @@ class Controller extends ChangeNotifier {
   final Map<String, DateTime> _lastNudgeFrom = {};
   final Map<String, TransferEntry> _transfers = {};
   final Map<String, Timer> _transferDismissTimers = {};
+  final Set<String> _canceledTransfers = <String>{};
   final Map<String, Future<String?>> _dragMaterializationInFlight = {};
   final _SlidingRateLimiter _udpRateLimiter = _SlidingRateLimiter();
   final _SlidingRateLimiter _tcpRateLimiter = _SlidingRateLimiter();
@@ -2241,9 +2266,15 @@ class Controller extends ChangeNotifier {
     }
     final sink = temp.openWrite(mode: FileMode.writeOnly);
     try {
-      await _streamRemote(item, sink, () => false);
+      final completed = await _streamRemote(item, sink, () => false);
       await sink.flush();
       await sink.close();
+      if (!completed) {
+        if (await temp.exists()) {
+          await temp.delete();
+        }
+        throw _TransferCanceledException();
+      }
       if (await target.exists()) {
         await target.delete();
       }
@@ -2293,8 +2324,16 @@ class Controller extends ChangeNotifier {
     for (final id in ids) {
       _transfers.remove(id);
       _transferDismissTimers.remove(id)?.cancel();
+      _canceledTransfers.remove(id);
     }
     notifyListeners();
+  }
+
+  void cancelTransfer(String transferId) {
+    final entry = _transfers[transferId];
+    if (entry == null || entry.state != TransferState.running) return;
+    _canceledTransfers.add(transferId);
+    _finishTransfer(transferId, state: TransferState.canceled);
   }
 
   Future<bool> _addPath(String path) async {
@@ -2739,6 +2778,7 @@ class Controller extends ChangeNotifier {
   }) {
     _transferCounter++;
     final id = '${DateTime.now().microsecondsSinceEpoch}-$_transferCounter';
+    _canceledTransfers.remove(id);
     _transfers[id] = TransferEntry(
       id: id,
       name: name,
@@ -2767,6 +2807,9 @@ class Controller extends ChangeNotifier {
     if (entry == null) return;
     if (entry.state != TransferState.running) return;
     entry.complete(state: state, error: error);
+    if (state != TransferState.canceled) {
+      _canceledTransfers.remove(id);
+    }
     _scheduleTransferAutoDismiss(id);
     _trimTransferHistory();
     _notifyTransferListeners(force: true);
@@ -2782,6 +2825,7 @@ class Controller extends ChangeNotifier {
       }
       _transfers.remove(id);
       _transferDismissTimers.remove(id);
+      _canceledTransfers.remove(id);
       _notifyTransferListeners(force: true);
     });
   }
@@ -2810,6 +2854,7 @@ class Controller extends ChangeNotifier {
       final id = finished[i].id;
       _transfers.remove(id);
       _transferDismissTimers.remove(id)?.cancel();
+      _canceledTransfers.remove(id);
     }
   }
 
@@ -3044,7 +3089,7 @@ class Controller extends ChangeNotifier {
     }
   }
 
-  Future<void> _streamRemote(
+  Future<bool> _streamRemote(
     ShareItem it,
     EventSink sink,
     bool Function() canceled,
@@ -3086,13 +3131,16 @@ class Controller extends ChangeNotifier {
         var left = totalBytes;
         if (h.rem.isNotEmpty) {
           final n = min(left, h.rem.length);
-          if (n > 0 && !canceled()) {
+          if (n > 0 && !canceled() && !_canceledTransfers.contains(transferId)) {
             sink.add(h.rem.sublist(0, n));
             _addTransferProgress(transferId, n);
           }
           left -= n;
         }
-        while (left > 0 && !canceled() && await h.it.moveNext()) {
+        while (left > 0 &&
+            !canceled() &&
+            !_canceledTransfers.contains(transferId) &&
+            await h.it.moveNext()) {
           final chunk = h.it.current;
           final n = min(left, chunk.length);
           if (n > 0) {
@@ -3101,9 +3149,9 @@ class Controller extends ChangeNotifier {
           }
           left -= n;
         }
-        if (canceled()) {
+        if (canceled() || _canceledTransfers.contains(transferId)) {
           _finishTransfer(transferId, state: TransferState.canceled);
-          return;
+          return false;
         }
         if (left > 0) {
           _finishTransfer(
@@ -3114,7 +3162,12 @@ class Controller extends ChangeNotifier {
           throw Exception('Transfer interrupted');
         }
         _finishTransfer(transferId, state: TransferState.completed);
+        return true;
       } catch (e) {
+        if (_canceledTransfers.contains(transferId)) {
+          _finishTransfer(transferId, state: TransferState.canceled);
+          return false;
+        }
         _finishTransfer(
           transferId,
           state: TransferState.failed,
@@ -3850,6 +3903,11 @@ class _ProtocolMismatchException implements Exception {
     return 'Protocol mismatch: local $_protocolMajor.x, '
         'remote ${remoteMajor ?? 'unknown'}.x';
   }
+}
+
+class _TransferCanceledException implements Exception {
+  @override
+  String toString() => 'Transfer canceled';
 }
 
 enum TransferDirection { download, upload }
