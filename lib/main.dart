@@ -900,6 +900,9 @@ class _HomeState extends State<Home>
     String? connectStatus;
     String? updateStatus;
     bool checkingUpdates = false;
+    bool profilingEnabled = c.latencyProfilingEnabled;
+    final latencySamples = c.peerFirstSyncLatency.entries.toList(growable: false)
+      ..sort((a, b) => a.key.compareTo(b.key));
     await showDialog<void>(
       context: context,
       builder: (_) => StatefulBuilder(
@@ -955,6 +958,19 @@ class _HomeState extends State<Home>
                       setDialogState(() => _autoUpdateChecks = value);
                       c.setAutoUpdateChecks(value);
                       widget.onAutoUpdateChecksChanged(value);
+                    },
+                  ),
+                  SwitchListTile.adaptive(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Latency profiling'),
+                    subtitle: const Text(
+                      'Capture first-seen to first-sync timing per peer',
+                    ),
+                    value: profilingEnabled,
+                    onChanged: (value) {
+                      setDialogState(() => profilingEnabled = value);
+                      c.setLatencyProfilingEnabled(value);
                     },
                   ),
                   Row(
@@ -1081,6 +1097,14 @@ class _HomeState extends State<Home>
                     const Text('Network Diagnostics'),
                     for (final entry in diagnostics)
                       Text('- ${entry.key}: ${entry.value}'),
+                  ],
+                  if (latencySamples.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    const Text('Latency Samples'),
+                    for (final entry in latencySamples)
+                      Text(
+                        '- ${entry.key}: ${entry.value.inMilliseconds} ms',
+                      ),
                   ],
                 ],
               ),
@@ -2174,6 +2198,9 @@ class Controller extends ChangeNotifier {
   final Map<String, int> _activePeerUploads = <String, int>{};
   final Map<String, int> _activePeerDownloads = <String, int>{};
   final Map<String, int> _networkDiagnostics = <String, int>{};
+  bool _latencyProfilingEnabled = false;
+  final Map<String, DateTime> _peerFirstSeenAt = <String, DateTime>{};
+  final Map<String, Duration> _peerFirstSyncLatency = <String, Duration>{};
   int _transferCounter = 0;
   int _activeInboundClients = 0;
   DateTime _lastTransferNotify = DateTime.fromMillisecondsSinceEpoch(0);
@@ -2194,9 +2221,20 @@ class Controller extends ChangeNotifier {
 
   Map<String, int> get networkDiagnostics =>
       Map<String, int>.unmodifiable(_networkDiagnostics);
+  bool get latencyProfilingEnabled => _latencyProfilingEnabled;
+  Map<String, Duration> get peerFirstSyncLatency =>
+      Map<String, Duration>.unmodifiable(_peerFirstSyncLatency);
 
   void _incDiagnostic(String key) {
     _networkDiagnostics.update(key, (v) => v + 1, ifAbsent: () => 1);
+  }
+
+  void setLatencyProfilingEnabled(bool enabled) {
+    _latencyProfilingEnabled = enabled;
+    if (!enabled) {
+      _peerFirstSeenAt.clear();
+      _peerFirstSyncLatency.clear();
+    }
   }
 
   Future<String> checkForUpdates() async {
@@ -3020,6 +3058,9 @@ class Controller extends ChangeNotifier {
 
         final now = DateTime.now();
         final existed = peers.containsKey(id);
+        if (!existed && _latencyProfilingEnabled) {
+          _peerFirstSeenAt.putIfAbsent(id, () => now);
+        }
         final beforeCount = peers.length;
         final p = peers.putIfAbsent(
           id,
@@ -3110,9 +3151,17 @@ class Controller extends ChangeNotifier {
         if (manifest == null) return;
         p0.rev = manifest.revision;
         p0.name = manifest.name;
-        p0.lastSeen = DateTime.now();
-        p0.lastGoodContact = DateTime.now();
+        final now = DateTime.now();
+        p0.lastSeen = now;
+        p0.lastGoodContact = now;
         p0.recordFetchSuccess();
+        if (_latencyProfilingEnabled &&
+            !_peerFirstSyncLatency.containsKey(p0.id)) {
+          final firstSeen = _peerFirstSeenAt[p0.id];
+          if (firstSeen != null) {
+            _peerFirstSyncLatency[p0.id] = now.difference(firstSeen);
+          }
+        }
         final changed = !_sameRemoteItems(p0.items, manifest.items);
         if (changed) {
           p0.items
