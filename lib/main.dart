@@ -2870,15 +2870,15 @@ class Controller extends ChangeNotifier {
     final f = File(norm);
     if (!await f.exists()) return false;
     final size = await f.length();
-    final iconBytes = await _resolveIconBytes(norm);
     final existing = _pathToId[norm];
     if (existing != null && _local[existing] != null) {
       _local[existing] = _local[existing]!.copyWith(
         name: p.basename(norm),
         rel: rel,
         size: size,
-        iconBytes: iconBytes,
+        iconBytes: _local[existing]!.iconBytes,
       );
+      unawaited(_resolveAndApplyIcon(norm, existing));
       return true;
     }
     _counter++;
@@ -2889,10 +2889,29 @@ class Controller extends ChangeNotifier {
       rel: rel,
       path: norm,
       size: size,
-      iconBytes: iconBytes,
+      iconBytes: null,
     );
     _pathToId[norm] = id;
+    unawaited(_resolveAndApplyIcon(norm, id));
     return true;
+  }
+
+  Future<void> _resolveAndApplyIcon(String path, String itemId) async {
+    try {
+      final iconBytes = await _resolveIconBytes(path);
+      if (iconBytes == null) return;
+      final current = _local[itemId];
+      if (current == null) return;
+      if (current.path != path) return;
+      final existing = current.iconBytes;
+      if (existing != null &&
+          existing.length == iconBytes.length &&
+          _fastBytesFingerprint(existing) == _fastBytesFingerprint(iconBytes)) {
+        return;
+      }
+      _local[itemId] = current.copyWith(iconBytes: iconBytes);
+      notifyListeners();
+    } catch (_) {}
   }
 
   Future<void> _loadIps() async {
