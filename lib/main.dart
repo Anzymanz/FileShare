@@ -1128,8 +1128,9 @@ class _HomeState extends State<Home>
   }
 }
 
-class _SettingsButton extends StatefulWidget {
-  const _SettingsButton({
+class SettingsButton extends StatefulWidget {
+  const SettingsButton({
+    super.key,
     required this.dark,
     required this.themeIndex,
     required this.connectedCount,
@@ -1150,10 +1151,10 @@ class _SettingsButton extends StatefulWidget {
   final VoidCallback onToggleMinimizeToTray;
 
   @override
-  State<_SettingsButton> createState() => _SettingsButtonState();
+  State<SettingsButton> createState() => _SettingsButtonState();
 }
 
-class _SettingsButtonState extends State<_SettingsButton> {
+class _SettingsButtonState extends State<SettingsButton> {
   bool _hovering = false;
 
   Future<void> _showThemesWindow(BuildContext context) async {
@@ -1299,7 +1300,7 @@ class _TitleBarContent extends StatelessWidget {
               ? const DragToMoveArea(child: SizedBox.expand())
               : const SizedBox(),
         ),
-        _SettingsButton(
+        SettingsButton(
           dark: dark,
           themeIndex: themeIndex,
           connectedCount: connectedCount,
