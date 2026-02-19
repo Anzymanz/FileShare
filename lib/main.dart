@@ -3144,16 +3144,9 @@ class Controller extends ChangeNotifier {
       if (x.id != y.id ||
           x.name != y.name ||
           x.rel != y.rel ||
-          x.size != y.size) {
+          x.size != y.size ||
+          x.iconFingerprint != y.iconFingerprint) {
         return false;
-      }
-      final xb = x.iconBytes;
-      final yb = y.iconBytes;
-      if (xb == null && yb == null) continue;
-      if (xb == null || yb == null) return false;
-      if (xb.length != yb.length) return false;
-      for (var j = 0; j < xb.length; j++) {
-        if (xb[j] != yb[j]) return false;
       }
     }
     return true;
@@ -3890,6 +3883,9 @@ class Controller extends ChangeNotifier {
           rel: relativePath,
           size: size,
           iconBytes: iconBytes,
+          iconFingerprint: iconBytes == null
+              ? null
+              : _fastBytesFingerprint(iconBytes),
         ),
       );
     }
@@ -3978,6 +3974,16 @@ class Controller extends ChangeNotifier {
       mismatch |= a.codeUnitAt(i) ^ b.codeUnitAt(i);
     }
     return mismatch == 0;
+  }
+
+  int _fastBytesFingerprint(Uint8List bytes) {
+    var hash = 0x811C9DC5;
+    for (final b in bytes) {
+      hash ^= b;
+      hash = (hash * 0x01000193) & 0xFFFFFFFF;
+    }
+    hash ^= bytes.length;
+    return hash & 0x7FFFFFFF;
   }
 
   void _clearIncompatiblePeerHints({
@@ -4635,6 +4641,7 @@ class RemoteItem {
     required this.rel,
     required this.size,
     required this.iconBytes,
+    required this.iconFingerprint,
   });
 
   final String id;
@@ -4642,6 +4649,7 @@ class RemoteItem {
   final String rel;
   final int size;
   final Uint8List? iconBytes;
+  final int? iconFingerprint;
 }
 
 class ShareItem {
