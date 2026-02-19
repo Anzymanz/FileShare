@@ -1840,6 +1840,58 @@ String _safeFileName(String name) {
   return sanitized;
 }
 
+bool _isValidRemoteFileName(String name) {
+  if (name.trim().isEmpty || name.length > _maxItemNameChars) return false;
+  if (RegExp(r'[\x00-\x1F]').hasMatch(name)) return false;
+  if (RegExp(r'[<>:"/\\|?*]').hasMatch(name)) return false;
+  return !_isReservedWindowsName(name);
+}
+
+bool _isValidRelativePath(String rel) {
+  if (rel.trim().isEmpty || rel.length > _maxRelativePathChars) return false;
+  if (RegExp(r'[\x00-\x1F]').hasMatch(rel)) return false;
+  final normalized = rel.replaceAll('\\', '/');
+  if (normalized.startsWith('/') || normalized.contains('//')) return false;
+  if (normalized.split('/').any((segment) {
+    final s = segment.trim();
+    if (s.isEmpty || s == '.' || s == '..') return true;
+    return _isReservedWindowsName(s);
+  })) {
+    return false;
+  }
+  return true;
+}
+
+bool _isReservedWindowsName(String name) {
+  final base = name.split('.').first.trim().toUpperCase();
+  if (base.isEmpty) return true;
+  const reserved = <String>{
+    'CON',
+    'PRN',
+    'AUX',
+    'NUL',
+    'COM1',
+    'COM2',
+    'COM3',
+    'COM4',
+    'COM5',
+    'COM6',
+    'COM7',
+    'COM8',
+    'COM9',
+    'LPT1',
+    'LPT2',
+    'LPT3',
+    'LPT4',
+    'LPT5',
+    'LPT6',
+    'LPT7',
+    'LPT8',
+    'LPT9',
+  };
+  return reserved.contains(base);
+}
+
 class Controller extends ChangeNotifier {
   final deviceId = _id();
   final deviceName = Platform.localHostname;
@@ -3413,6 +3465,10 @@ class Controller extends ChangeNotifier {
       );
       final size = _safeInt(map['size'], min: 0, max: 0x7fffffff);
       if (itemId == null || itemName == null || relativePath == null || size == null) {
+        continue;
+      }
+      if (!_isValidRemoteFileName(itemName) || !_isValidRelativePath(relativePath)) {
+        _incDiagnostic('manifest_item_rejected');
         continue;
       }
       Uint8List? iconBytes;
