@@ -89,6 +89,8 @@ void main() {
               child: IconTile(
                 item: item,
                 createItem: (_) async => null,
+                isFavorite: false,
+                onToggleFavorite: () {},
                 onRemove: null,
                 onDownload: () async => downloadCalls++,
               ),
@@ -148,6 +150,8 @@ void main() {
               child: IconTile(
                 item: item,
                 createItem: (_) async => null,
+                isFavorite: false,
+                onToggleFavorite: () {},
                 onRemove: () => removeCalls++,
                 onDownload: null,
               ),
@@ -173,5 +177,61 @@ void main() {
     await tester.tap(find.text('Remove'));
     await tester.pumpAndSettle();
     expect(removeCalls, 1);
+  });
+
+  testWidgets('icon tile context menu toggles Pin action', (
+    WidgetTester tester,
+  ) async {
+    var pinCalls = 0;
+    final item = ShareItem(
+      ownerId: 'peer-a',
+      owner: 'Peer A',
+      itemId: 'item-3',
+      name: 'pin-me.txt',
+      rel: 'pin-me.txt',
+      size: 32,
+      local: false,
+      path: null,
+      iconBytes: null,
+      peerId: 'peer-a',
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: SizedBox(
+              width: 180,
+              height: 180,
+              child: IconTile(
+                item: item,
+                createItem: (_) async => null,
+                isFavorite: false,
+                onToggleFavorite: () => pinCalls++,
+                onRemove: null,
+                onDownload: null,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final center = tester.getCenter(find.byType(IconTile));
+    final gesture = await tester.createGesture(
+      kind: PointerDeviceKind.mouse,
+      buttons: kSecondaryMouseButton,
+    );
+    await gesture.addPointer(location: center);
+    await tester.pump();
+    await gesture.down(center);
+    await tester.pumpAndSettle();
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    expect(find.text('Pin'), findsOneWidget);
+    await tester.tap(find.text('Pin'));
+    await tester.pumpAndSettle();
+    expect(pinCalls, 1);
   });
 }

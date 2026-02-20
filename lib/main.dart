@@ -710,6 +710,7 @@ class _HomeState extends State<Home>
   ItemSortMode _sortMode = ItemSortMode.ownerThenName;
   ItemLayoutMode _layoutMode = ItemLayoutMode.grid;
   double _iconSize = 64;
+  Set<String> _favoriteKeys = <String>{};
   final Map<String, DateTime> _itemFirstSeenAt = <String, DateTime>{};
   bool _trayInitialized = false;
   bool _isHiddenToTray = false;
@@ -750,11 +751,27 @@ class _HomeState extends State<Home>
     unawaited(_initDesktopIntegrations());
     unawaited(_initFocus());
     unawaited(c.start());
+    unawaited(() async {
+      final loaded = await _loadFavoriteKeys();
+      if (!mounted) return;
+      setState(() => _favoriteKeys = loaded);
+    }());
     if (widget.startInTrayRequested && Platform.isWindows && !_isTest) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         unawaited(_hideToTray(force: true));
       });
     }
+  }
+
+  bool _isFavorite(ShareItem item) => _favoriteKeys.contains(item.key);
+
+  Future<void> _toggleFavorite(ShareItem item) async {
+    final next = <String>{..._favoriteKeys};
+    if (!next.add(item.key)) {
+      next.remove(item.key);
+    }
+    setState(() => _favoriteKeys = next);
+    await _saveFavoriteKeys(next);
   }
 
   Future<void> _initDesktopIntegrations() async {
@@ -1520,6 +1537,9 @@ class _HomeState extends State<Home>
                                         : _ExplorerGrid(
                                             items: visibleItems,
                                             buildDragItem: c.buildDragItem,
+                                            favoriteKeys: _favoriteKeys,
+                                            isFavorite: _isFavorite,
+                                            onToggleFavorite: _toggleFavorite,
                                             onRemove: (item) =>
                                                 c.removeLocal(item.itemId),
                                             onDownload: _downloadRemoteItem,
@@ -2557,10 +2577,32 @@ class _OwnerSection {
   final List<ShareItem> items = <ShareItem>[];
 }
 
+({List<ShareItem> pinned, List<ShareItem> others}) partitionPinnedItems({
+  required List<ShareItem> items,
+  required Set<String> favoriteKeys,
+}) {
+  if (favoriteKeys.isEmpty) {
+    return (pinned: const <ShareItem>[], others: List<ShareItem>.from(items));
+  }
+  final pinned = <ShareItem>[];
+  final others = <ShareItem>[];
+  for (final item in items) {
+    if (favoriteKeys.contains(item.key)) {
+      pinned.add(item);
+    } else {
+      others.add(item);
+    }
+  }
+  return (pinned: pinned, others: others);
+}
+
 class _ExplorerGrid extends StatelessWidget {
   const _ExplorerGrid({
     required this.items,
     required this.buildDragItem,
+    required this.favoriteKeys,
+    required this.isFavorite,
+    required this.onToggleFavorite,
     required this.onRemove,
     required this.onDownload,
     required this.onDownloadAllFromOwner,
@@ -2571,6 +2613,9 @@ class _ExplorerGrid extends StatelessWidget {
 
   final List<ShareItem> items;
   final Future<DragItem?> Function(ShareItem) buildDragItem;
+  final Set<String> favoriteKeys;
+  final bool Function(ShareItem) isFavorite;
+  final Future<void> Function(ShareItem) onToggleFavorite;
   final ValueChanged<ShareItem> onRemove;
   final Future<void> Function(ShareItem) onDownload;
   final Future<void> Function(String ownerId, String ownerName, List<ShareItem>)
@@ -2586,8 +2631,13 @@ class _ExplorerGrid extends StatelessWidget {
         final normalizedIconSize = iconSize.clamp(44.0, 96.0);
         final tileWidth = max(116.0, normalizedIconSize + 56.0);
         final columns = max(1, (constraints.maxWidth / tileWidth).floor());
+        final split = partitionPinnedItems(
+          items: items,
+          favoriteKeys: favoriteKeys,
+        );
+
         final groups = <String, _OwnerSection>{};
-        for (final item in items) {
+        for (final item in split.others) {
           final section = groups.putIfAbsent(
             item.ownerId,
             () => _OwnerSection(ownerId: item.ownerId, ownerName: item.owner),
@@ -2606,103 +2656,136 @@ class _ExplorerGrid extends StatelessWidget {
                   context,
                 ).colorScheme.onSurface.withValues(alpha: gridAlpha),
               ),
-              child: ListView.builder(
+              child: ListView(
                 padding: const EdgeInsets.all(8),
-                itemCount: orderedGroups.length,
-                itemBuilder: (context, groupIndex) {
-                  final group = orderedGroups[groupIndex];
-                  final owner = group.ownerName;
-                  final sectionItems = group.items;
-                  final hasRemoteItems = sectionItems.any((item) => !item.local);
-                  return Padding(
-                    padding: EdgeInsets.only(
-                      bottom: groupIndex == orderedGroups.length - 1 ? 0 : 12,
+                children: [
+                  if (split.pinned.isNotEmpty)
+                    _buildSection(
+                      context: context,
+                      groupIndex: 0,
+                      totalGroups: orderedGroups.length + 1,
+                      ownerLabel: 'Pinned',
+                      ownerId: 'pinned',
+                      sectionItems: split.pinned,
+                      hasDownloadAllAction: false,
+                      columns: columns,
+                      normalizedIconSize: normalizedIconSize,
                     ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(6, 2, 6, 8),
-                          child: Row(
-                            children: [
-                              Expanded(
-                                child: Text(
-                                  owner,
-                                  style: Theme.of(context).textTheme.labelLarge,
-                                ),
-                              ),
-                              if (hasRemoteItems)
-                                TextButton.icon(
-                                  onPressed: () {
-                                    unawaited(
-                                      onDownloadAllFromOwner(
-                                        group.ownerId,
-                                        group.ownerName,
-                                        sectionItems,
-                                      ),
-                                    );
-                                  },
-                                  icon: const Icon(Icons.download, size: 14),
-                                  label: const Text('Download all...'),
-                                ),
-                            ],
-                          ),
-                        ),
-                        if (layoutMode == ItemLayoutMode.grid)
-                          GridView.builder(
-                            shrinkWrap: true,
-                            physics: const NeverScrollableScrollPhysics(),
-                            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                              crossAxisCount: columns,
-                              mainAxisSpacing: 8,
-                              crossAxisSpacing: 8,
-                              childAspectRatio: 0.9,
-                            ),
-                            itemCount: sectionItems.length,
-                            itemBuilder: (context, index) {
-                              final item = sectionItems[index];
-                              return IconTile(
-                                key: ValueKey(item.key),
-                                item: item,
-                                createItem: buildDragItem,
-                                onRemove: item.local ? () => onRemove(item) : null,
-                                onDownload: item.local
-                                    ? null
-                                    : () => onDownload(item),
-                                iconSize: normalizedIconSize,
-                              );
-                            },
-                          )
-                        else
-                          ListView.separated(
-                            shrinkWrap: true,
-                            physics: const NeverScrollableScrollPhysics(),
-                            itemCount: sectionItems.length,
-                            separatorBuilder: (_, __) => const SizedBox(height: 6),
-                            itemBuilder: (context, index) {
-                              final item = sectionItems[index];
-                              return IconTile(
-                                key: ValueKey(item.key),
-                                item: item,
-                                createItem: buildDragItem,
-                                onRemove: item.local ? () => onRemove(item) : null,
-                                onDownload: item.local
-                                    ? null
-                                    : () => onDownload(item),
-                                compact: true,
-                                iconSize: normalizedIconSize,
-                              );
-                            },
-                          ),
-                      ],
+                  for (var i = 0; i < orderedGroups.length; i++)
+                    _buildSection(
+                      context: context,
+                      groupIndex: split.pinned.isEmpty ? i : i + 1,
+                      totalGroups: orderedGroups.length + (split.pinned.isEmpty ? 0 : 1),
+                      ownerLabel: orderedGroups[i].ownerName,
+                      ownerId: orderedGroups[i].ownerId,
+                      sectionItems: orderedGroups[i].items,
+                      hasDownloadAllAction: true,
+                      columns: columns,
+                      normalizedIconSize: normalizedIconSize,
                     ),
-                  );
-                },
+                ],
               ),
             );
           },
         );
       },
+    );
+  }
+
+  Widget _buildSection({
+    required BuildContext context,
+    required int groupIndex,
+    required int totalGroups,
+    required String ownerLabel,
+    required String ownerId,
+    required List<ShareItem> sectionItems,
+    required bool hasDownloadAllAction,
+    required int columns,
+    required double normalizedIconSize,
+  }) {
+    final hasRemoteItems = sectionItems.any((item) => !item.local);
+    return Padding(
+      padding: EdgeInsets.only(
+        bottom: groupIndex == totalGroups - 1 ? 0 : 12,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(6, 2, 6, 8),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    ownerLabel,
+                    style: Theme.of(context).textTheme.labelLarge,
+                  ),
+                ),
+                if (hasDownloadAllAction && hasRemoteItems)
+                  TextButton.icon(
+                    onPressed: () {
+                      unawaited(
+                        onDownloadAllFromOwner(
+                          ownerId,
+                          ownerLabel,
+                          sectionItems,
+                        ),
+                      );
+                    },
+                    icon: const Icon(Icons.download, size: 14),
+                    label: const Text('Download all...'),
+                  ),
+              ],
+            ),
+          ),
+          if (layoutMode == ItemLayoutMode.grid)
+            GridView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: columns,
+                mainAxisSpacing: 8,
+                crossAxisSpacing: 8,
+                childAspectRatio: 0.9,
+              ),
+              itemCount: sectionItems.length,
+              itemBuilder: (context, index) {
+                final item = sectionItems[index];
+                return IconTile(
+                  key: ValueKey(item.key),
+                  item: item,
+                  createItem: buildDragItem,
+                  isFavorite: isFavorite(item),
+                  onToggleFavorite: () => onToggleFavorite(item),
+                  onRemove: item.local ? () => onRemove(item) : null,
+                  onDownload: item.local ? null : () => onDownload(item),
+                  iconSize: normalizedIconSize,
+                );
+              },
+            )
+          else
+            ListView.separated(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: sectionItems.length,
+              separatorBuilder: (_, __) => const SizedBox(height: 6),
+              itemBuilder: (context, index) {
+                final item = sectionItems[index];
+                return IconTile(
+                  key: ValueKey(item.key),
+                  item: item,
+                  createItem: buildDragItem,
+                  isFavorite: isFavorite(item),
+                  onToggleFavorite: () => onToggleFavorite(item),
+                  onRemove: item.local ? () => onRemove(item) : null,
+                  onDownload: item.local ? null : () => onDownload(item),
+                  compact: true,
+                  iconSize: normalizedIconSize,
+                );
+              },
+            ),
+        ],
+      ),
     );
   }
 }
@@ -2735,6 +2818,8 @@ class IconTile extends StatefulWidget {
     super.key,
     required this.item,
     required this.createItem,
+    required this.isFavorite,
+    required this.onToggleFavorite,
     required this.onRemove,
     required this.onDownload,
     this.compact = false,
@@ -2743,6 +2828,8 @@ class IconTile extends StatefulWidget {
 
   final ShareItem item;
   final Future<DragItem?> Function(ShareItem) createItem;
+  final bool isFavorite;
+  final VoidCallback onToggleFavorite;
   final VoidCallback? onRemove;
   final Future<void> Function()? onDownload;
   final bool compact;
@@ -2756,6 +2843,7 @@ class _IconTileState extends State<IconTile> {
   bool dragging = false;
   static const int _menuDownloadAs = 1;
   static const int _menuRemove = 2;
+  static const int _menuToggleFavorite = 3;
 
   Future<DragItem?> _provider(DragItemRequest r) async {
     void upd() {
@@ -2799,6 +2887,10 @@ class _IconTileState extends State<IconTile> {
         Offset.zero & overlay.size,
       ),
       items: [
+        PopupMenuItem<int>(
+          value: _menuToggleFavorite,
+          child: Text(widget.isFavorite ? 'Unpin' : 'Pin'),
+        ),
         if (widget.onDownload != null)
           const PopupMenuItem<int>(
             value: _menuDownloadAs,
@@ -2813,6 +2905,9 @@ class _IconTileState extends State<IconTile> {
     );
     if (!mounted || selected == null) return;
     switch (selected) {
+      case _menuToggleFavorite:
+        widget.onToggleFavorite();
+        break;
       case _menuDownloadAs:
         await widget.onDownload?.call();
         break;
@@ -2914,6 +3009,15 @@ class _IconTileState extends State<IconTile> {
     final actionButtons = Row(
       mainAxisSize: MainAxisSize.min,
       children: [
+        IconButton(
+          tooltip: widget.isFavorite ? 'Unpin' : 'Pin',
+          visualDensity: VisualDensity.compact,
+          onPressed: widget.onToggleFavorite,
+          icon: Icon(
+            widget.isFavorite ? Icons.star_rounded : Icons.star_border_rounded,
+            size: 16,
+          ),
+        ),
         if (widget.onDownload != null)
           IconButton(
             tooltip: 'Download...',
@@ -2986,8 +3090,7 @@ class _IconTileState extends State<IconTile> {
                               ],
                             ),
                           ),
-                          if (widget.onDownload != null || widget.onRemove != null)
-                            actionButtons,
+                          actionButtons,
                         ],
                       ),
                     )
@@ -3008,8 +3111,7 @@ class _IconTileState extends State<IconTile> {
                             style: theme.textTheme.bodySmall,
                           ),
                         ),
-                        if (widget.onDownload != null || widget.onRemove != null)
-                          actionButtons,
+                        actionButtons,
                       ],
                     ),
             ),
@@ -5733,6 +5835,39 @@ Future<File> _windowStateFile() async {
 Future<File> _appSettingsFile() async {
   final dir = await _appDataDir();
   return File(p.join(dir.path, 'settings.json'));
+}
+
+Future<File> _favoritesFile() async {
+  final dir = await _appDataDir();
+  return File(p.join(dir.path, 'favorites.json'));
+}
+
+Future<Set<String>> _loadFavoriteKeys() async {
+  try {
+    final file = await _favoritesFile();
+    if (!await file.exists()) return <String>{};
+    final decoded = jsonDecode(await file.readAsString());
+    if (decoded is! List) return <String>{};
+    final out = <String>{};
+    for (final raw in decoded) {
+      if (raw is! String) continue;
+      final key = raw.trim();
+      if (key.isNotEmpty && key.length <= 512) {
+        out.add(key);
+      }
+    }
+    return out;
+  } catch (_) {
+    return <String>{};
+  }
+}
+
+Future<void> _saveFavoriteKeys(Set<String> keys) async {
+  try {
+    final file = await _favoritesFile();
+    final sorted = keys.toList()..sort();
+    await file.writeAsString(jsonEncode(sorted), flush: true);
+  } catch (_) {}
 }
 
 Future<Directory> _appDataDir() async {

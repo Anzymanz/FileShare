@@ -141,4 +141,37 @@ void main() {
     expect(bySize.first.name, 'b.txt');
     expect(byDate.first.name, 'b.txt');
   });
+
+  test('partitionPinnedItems splits pinned and non-pinned while preserving order', () {
+    final a = _item(
+      ownerId: 'local',
+      owner: 'This PC',
+      id: '1',
+      name: 'a.txt',
+      size: 1,
+      local: true,
+    );
+    final b = _item(
+      ownerId: 'peer',
+      owner: 'Peer',
+      id: '2',
+      name: 'b.txt',
+      size: 2,
+      local: false,
+    );
+    final c = _item(
+      ownerId: 'peer',
+      owner: 'Peer',
+      id: '3',
+      name: 'c.txt',
+      size: 3,
+      local: false,
+    );
+    final split = partitionPinnedItems(
+      items: [a, b, c],
+      favoriteKeys: {b.key},
+    );
+    expect(split.pinned.map((e) => e.name).toList(), ['b.txt']);
+    expect(split.others.map((e) => e.name).toList(), ['a.txt', 'c.txt']);
+  });
 }
