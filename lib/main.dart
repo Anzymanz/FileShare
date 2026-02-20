@@ -525,6 +525,14 @@ String normalizeItemNote(String raw) {
   return trimmed.substring(0, _maxItemNoteChars).trimRight();
 }
 
+String? normalizeSha256Hex(Object? raw) {
+  if (raw is! String) return null;
+  final value = raw.trim().toLowerCase();
+  if (value.length != 64) return null;
+  if (!RegExp(r'^[0-9a-f]{64}$').hasMatch(value)) return null;
+  return value;
+}
+
 bool _isValidStartupExecutable(String executablePath) {
   final fileName = p.basename(executablePath).toLowerCase();
   return fileName == 'fileshare.exe';
@@ -4115,6 +4123,7 @@ class Controller extends ChangeNotifier {
   final Map<String, Timer> _transferDismissTimers = {};
   final Set<String> _canceledTransfers = <String>{};
   final Map<String, Future<String?>> _dragMaterializationInFlight = {};
+  final Map<String, Future<String?>> _checksumInFlight = {};
   final _SlidingRateLimiter _udpRateLimiter = _SlidingRateLimiter();
   final _SlidingRateLimiter _tcpRateLimiter = _SlidingRateLimiter();
   final _PerPeerRateLimiter _uploadRateLimiter = _PerPeerRateLimiter();
@@ -4524,6 +4533,7 @@ class Controller extends ChangeNotifier {
           local: true,
           path: e.path,
           iconBytes: e.iconBytes,
+          sha256: e.sha256,
           peerId: null,
         ),
       );
@@ -4541,6 +4551,7 @@ class Controller extends ChangeNotifier {
             local: false,
             path: null,
             iconBytes: e.iconBytes,
+            sha256: e.sha256,
             peerId: p.id,
           ),
         );
@@ -5294,8 +5305,10 @@ class Controller extends ChangeNotifier {
         rel: rel,
         size: size,
         iconBytes: _local[existing]!.iconBytes,
+        clearSha256: true,
       );
       unawaited(_resolveAndApplyIcon(norm, existing));
+      unawaited(_resolveAndApplyChecksum(norm, existing));
       return true;
     }
     _counter++;
@@ -5307,9 +5320,11 @@ class Controller extends ChangeNotifier {
       path: norm,
       size: size,
       iconBytes: null,
+      sha256: null,
     );
     _pathToId[norm] = id;
     unawaited(_resolveAndApplyIcon(norm, id));
+    unawaited(_resolveAndApplyChecksum(norm, id));
     return true;
   }
 
@@ -5329,6 +5344,54 @@ class Controller extends ChangeNotifier {
       _local[itemId] = current.copyWith(iconBytes: iconBytes);
       notifyListeners();
     } catch (_) {}
+  }
+
+  Future<void> _resolveAndApplyChecksum(String path, String itemId) async {
+    try {
+      await _ensureLocalItemChecksum(itemId, pathHint: path);
+    } catch (_) {}
+  }
+
+  Future<String?> _ensureLocalItemChecksum(
+    String itemId, {
+    String? pathHint,
+  }) async {
+    final current = _local[itemId];
+    if (current == null) return null;
+    if (current.sha256 != null) return current.sha256;
+    final existingJob = _checksumInFlight[itemId];
+    if (existingJob != null) {
+      return await existingJob;
+    }
+    final targetPath = pathHint ?? current.path;
+    final job = () async {
+      final hash = await _computeFileSha256Hex(targetPath);
+      if (hash == null) return null;
+      final latest = _local[itemId];
+      if (latest == null) return null;
+      if (latest.path != targetPath) return null;
+      if (latest.sha256 == hash) return hash;
+      _local[itemId] = latest.copyWith(sha256: hash);
+      notifyListeners();
+      return hash;
+    }();
+    _checksumInFlight[itemId] = job;
+    try {
+      return await job;
+    } finally {
+      _checksumInFlight.remove(itemId);
+    }
+  }
+
+  Future<String?> _computeFileSha256Hex(String path) async {
+    try {
+      final file = File(path);
+      if (!await file.exists()) return null;
+      final digest = await crypto.sha256.bind(file.openRead()).first;
+      return digest.toString();
+    } catch (_) {
+      return null;
+    }
   }
 
   Future<void> _loadIps() async {
@@ -5673,6 +5736,7 @@ class Controller extends ChangeNotifier {
           x.name != y.name ||
           x.rel != y.rel ||
           x.size != y.size ||
+          x.sha256 != y.sha256 ||
           x.iconFingerprint != y.iconFingerprint) {
         return false;
       }
@@ -6022,6 +6086,7 @@ class Controller extends ChangeNotifier {
                 'name': e.name,
                 'relativePath': e.rel,
                 'size': e.size,
+                'sha256': e.sha256,
                 'iconPngBase64':
                     (iconBytes == null || iconBytes.length > _maxIconBytes)
                     ? null
@@ -6091,6 +6156,7 @@ class Controller extends ChangeNotifier {
           await s.flush();
           return;
         }
+        final sha256 = await _ensureLocalItemChecksum(item.id);
         s.write(
           jsonEncode(
             _withAuth({
@@ -6098,6 +6164,7 @@ class Controller extends ChangeNotifier {
               'name': item.name,
               'relativePath': item.rel,
               'size': item.size,
+              'sha256': sha256,
             }),
           ),
         );
@@ -6228,6 +6295,17 @@ class Controller extends ChangeNotifier {
       if (m['type'] == 'error') throw Exception('Peer rejected transfer');
       if (m['type'] != 'file') throw Exception('Bad response');
       final totalBytes = (m['size'] as num).toInt();
+      final expectedSha256 =
+          normalizeSha256Hex(m['sha256']) ?? normalizeSha256Hex(it.sha256);
+      final hashSink = _DigestSink();
+      final hashConverter = crypto.sha256.startChunkedConversion(hashSink);
+      var hashClosed = false;
+      void closeHash() {
+        if (hashClosed) return;
+        hashConverter.close();
+        hashClosed = true;
+      }
+
       final transferId = _beginTransfer(
         name: (m['relativePath'] as String?) ?? it.rel,
         peerName: peer.name,
@@ -6255,12 +6333,14 @@ class Controller extends ChangeNotifier {
           if (n > 0 &&
               !canceled() &&
               !_canceledTransfers.contains(transferId)) {
+            final payload = h.rem.sublist(0, n);
             await _downloadRateLimiter.consume(
               peer.id,
               n,
               _perPeerDownloadRateLimitBytesPerSecond,
             );
-            sink.add(h.rem.sublist(0, n));
+            sink.add(payload);
+            hashConverter.add(payload);
             _addTransferProgress(transferId, n);
           }
           left -= n;
@@ -6272,21 +6352,25 @@ class Controller extends ChangeNotifier {
           final chunk = h.it.current;
           final n = min(left, chunk.length);
           if (n > 0) {
+            final payload = chunk.sublist(0, n);
             await _downloadRateLimiter.consume(
               peer.id,
               n,
               _perPeerDownloadRateLimitBytesPerSecond,
             );
-            sink.add(chunk.sublist(0, n));
+            sink.add(payload);
+            hashConverter.add(payload);
             _addTransferProgress(transferId, n);
           }
           left -= n;
         }
         if (canceled() || _canceledTransfers.contains(transferId)) {
+          closeHash();
           _finishTransfer(transferId, state: TransferState.canceled);
           return false;
         }
         if (left > 0) {
+          closeHash();
           _finishTransfer(
             transferId,
             state: TransferState.failed,
@@ -6294,9 +6378,22 @@ class Controller extends ChangeNotifier {
           );
           throw Exception('Transfer interrupted');
         }
+        closeHash();
+        if (expectedSha256 != null) {
+          final actualSha256 = hashSink.value?.toString();
+          if (actualSha256 == null) {
+            _incDiagnostic('checksum_missing');
+            throw Exception('Checksum unavailable');
+          }
+          if (actualSha256 != expectedSha256) {
+            _incDiagnostic('checksum_mismatch');
+            throw Exception('Checksum mismatch');
+          }
+        }
         _finishTransfer(transferId, state: TransferState.completed);
         return true;
       } catch (e) {
+        closeHash();
         if (_canceledTransfers.contains(transferId)) {
           _finishTransfer(transferId, state: TransferState.canceled);
           return false;
@@ -6468,6 +6565,7 @@ class Controller extends ChangeNotifier {
         continue;
       }
       Uint8List? iconBytes;
+      final sha256 = normalizeSha256Hex(map['sha256']);
       final iconBase64 = map['iconPngBase64'];
       if (iconBase64 is String && iconBase64.length <= _maxIconBase64Chars) {
         try {
@@ -6487,6 +6585,7 @@ class Controller extends ChangeNotifier {
           iconFingerprint: iconBytes == null
               ? null
               : _fastBytesFingerprint(iconBytes),
+          sha256: sha256,
         ),
       );
     }
@@ -7408,6 +7507,7 @@ class LocalItem {
     required this.path,
     required this.size,
     required this.iconBytes,
+    required this.sha256,
   });
 
   final String id;
@@ -7416,12 +7516,15 @@ class LocalItem {
   final String path;
   final int size;
   final Uint8List? iconBytes;
+  final String? sha256;
 
   LocalItem copyWith({
     String? name,
     String? rel,
     int? size,
     Uint8List? iconBytes,
+    String? sha256,
+    bool clearSha256 = false,
   }) => LocalItem(
     id: id,
     name: name ?? this.name,
@@ -7429,6 +7532,7 @@ class LocalItem {
     path: path,
     size: size ?? this.size,
     iconBytes: iconBytes ?? this.iconBytes,
+    sha256: clearSha256 ? null : (sha256 ?? this.sha256),
   );
 }
 
@@ -7440,6 +7544,7 @@ class RemoteItem {
     required this.size,
     required this.iconBytes,
     required this.iconFingerprint,
+    required this.sha256,
   });
 
   final String id;
@@ -7448,6 +7553,7 @@ class RemoteItem {
   final int size;
   final Uint8List? iconBytes;
   final int? iconFingerprint;
+  final String? sha256;
 }
 
 class ShareItem {
@@ -7461,6 +7567,7 @@ class ShareItem {
     required this.local,
     required this.path,
     required this.iconBytes,
+    this.sha256,
     required this.peerId,
   });
 
@@ -7473,6 +7580,7 @@ class ShareItem {
   final bool local;
   final String? path;
   final Uint8List? iconBytes;
+  final String? sha256;
   final String? peerId;
 
   String get key => '$ownerId::$itemId';
@@ -7526,6 +7634,18 @@ class _Header {
   final String line;
   final StreamIterator<Uint8List> it;
   final Uint8List rem;
+}
+
+class _DigestSink implements Sink<crypto.Digest> {
+  crypto.Digest? value;
+
+  @override
+  void add(crypto.Digest data) {
+    value = data;
+  }
+
+  @override
+  void close() {}
 }
 
 String _fmt(int b) {

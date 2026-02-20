@@ -241,4 +241,19 @@ void main() {
     final long = 'x' * 500;
     expect(normalizeItemNote(long).length, lessThanOrEqualTo(300));
   });
+
+  test('normalizeSha256Hex validates and normalizes checksum values', () {
+    expect(normalizeSha256Hex(null), isNull);
+    expect(normalizeSha256Hex('abc'), isNull);
+    expect(
+      normalizeSha256Hex('A' * 64),
+      'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    );
+    expect(
+      normalizeSha256Hex(
+        '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcg',
+      ),
+      isNull,
+    );
+  });
 }
