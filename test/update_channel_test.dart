@@ -143,4 +143,15 @@ void main() {
     final restored = AppSettings.fromJson(settings.toJson());
     expect(restored.sendToIntegrationEnabled, isTrue);
   });
+
+  test('AppSettings serializes drag-out compatibility preference', () {
+    const settings = AppSettings(
+      darkMode: true,
+      themeIndex: 0,
+      soundOnNudge: false,
+      dragOutCompatibilityMode: true,
+    );
+    final restored = AppSettings.fromJson(settings.toJson());
+    expect(restored.dragOutCompatibilityMode, isTrue);
+  });
 }

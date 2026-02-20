@@ -964,6 +964,7 @@ class _MyAppState extends State<MyApp> {
   late bool startWithWindows;
   late bool startInTrayOnLaunch;
   late bool sendToIntegrationEnabled;
+  late bool dragOutCompatibilityMode;
   late String roomChannel;
   late String sharedRoomKey;
   late String peerAllowlist;
@@ -989,6 +990,7 @@ class _MyAppState extends State<MyApp> {
     startWithWindows = widget.initialSettings.startWithWindows;
     startInTrayOnLaunch = widget.initialSettings.startInTrayOnLaunch;
     sendToIntegrationEnabled = widget.initialSettings.sendToIntegrationEnabled;
+    dragOutCompatibilityMode = widget.initialSettings.dragOutCompatibilityMode;
     roomChannel = widget.initialSettings.roomChannel;
     sharedRoomKey = widget.initialSettings.sharedRoomKey;
     peerAllowlist = widget.initialSettings.peerAllowlist;
@@ -1012,6 +1014,7 @@ class _MyAppState extends State<MyApp> {
         startWithWindows: startWithWindows,
         startInTrayOnLaunch: startInTrayOnLaunch,
         sendToIntegrationEnabled: sendToIntegrationEnabled,
+        dragOutCompatibilityMode: dragOutCompatibilityMode,
         roomChannel: roomChannel,
         sharedRoomKey: sharedRoomKey,
         peerAllowlist: peerAllowlist,
@@ -1057,6 +1060,7 @@ class _MyAppState extends State<MyApp> {
         initialStartWithWindows: startWithWindows,
         initialStartInTrayOnLaunch: startInTrayOnLaunch,
         initialSendToIntegrationEnabled: sendToIntegrationEnabled,
+        initialDragOutCompatibilityMode: dragOutCompatibilityMode,
         startInTrayRequested: widget.startInTrayRequested,
         initialRoomChannel: roomChannel,
         initialSharedRoomKey: sharedRoomKey,
@@ -1096,6 +1100,10 @@ class _MyAppState extends State<MyApp> {
         },
         onSendToIntegrationChanged: (value) {
           setState(() => sendToIntegrationEnabled = value);
+          unawaited(_persistSettings());
+        },
+        onDragOutCompatibilityModeChanged: (value) {
+          setState(() => dragOutCompatibilityMode = value);
           unawaited(_persistSettings());
         },
         onRoomChannelChanged: (value) {
@@ -1157,6 +1165,7 @@ class Home extends StatefulWidget {
     required this.initialStartWithWindows,
     required this.initialStartInTrayOnLaunch,
     required this.initialSendToIntegrationEnabled,
+    required this.initialDragOutCompatibilityMode,
     required this.startInTrayRequested,
     required this.initialRoomChannel,
     required this.initialSharedRoomKey,
@@ -1177,6 +1186,7 @@ class Home extends StatefulWidget {
     required this.onStartWithWindowsChanged,
     required this.onStartInTrayOnLaunchChanged,
     required this.onSendToIntegrationChanged,
+    required this.onDragOutCompatibilityModeChanged,
     required this.onRoomChannelChanged,
     required this.onSharedRoomKeyChanged,
     required this.onPeerAllowlistChanged,
@@ -1197,6 +1207,7 @@ class Home extends StatefulWidget {
   final bool initialStartWithWindows;
   final bool initialStartInTrayOnLaunch;
   final bool initialSendToIntegrationEnabled;
+  final bool initialDragOutCompatibilityMode;
   final bool startInTrayRequested;
   final String initialRoomChannel;
   final String initialSharedRoomKey;
@@ -1217,6 +1228,7 @@ class Home extends StatefulWidget {
   final ValueChanged<bool> onStartWithWindowsChanged;
   final ValueChanged<bool> onStartInTrayOnLaunchChanged;
   final ValueChanged<bool> onSendToIntegrationChanged;
+  final ValueChanged<bool> onDragOutCompatibilityModeChanged;
   final ValueChanged<String> onRoomChannelChanged;
   final ValueChanged<String> onSharedRoomKeyChanged;
   final ValueChanged<String> onPeerAllowlistChanged;
@@ -1250,6 +1262,7 @@ class _HomeState extends State<Home>
   bool _startWithWindows = false;
   bool _startInTrayOnLaunch = false;
   bool _sendToIntegrationEnabled = false;
+  bool _dragOutCompatibilityMode = false;
   String _roomChannel = '';
   String _sharedRoomKey = '';
   String _peerAllowlist = '';
@@ -1291,6 +1304,7 @@ class _HomeState extends State<Home>
     _startWithWindows = widget.initialStartWithWindows;
     _startInTrayOnLaunch = widget.initialStartInTrayOnLaunch;
     _sendToIntegrationEnabled = widget.initialSendToIntegrationEnabled;
+    _dragOutCompatibilityMode = widget.initialDragOutCompatibilityMode;
     _roomChannel = widget.initialRoomChannel;
     _soundOnNudge = widget.initialSoundOnNudge;
     _sharedRoomKey = widget.initialSharedRoomKey;
@@ -1316,6 +1330,7 @@ class _HomeState extends State<Home>
       transferRateLimitMBps: _transferRateLimitMBps,
       globalRateLimitMBps: _globalRateLimitMBps,
     );
+    c.setDragOutCompatibilityMode(_dragOutCompatibilityMode);
     c.setAutoUpdateChecks(_autoUpdateChecks);
     c.setUpdateChannel(_updateChannel);
     _nudgeAudioPlayer = AudioPlayer()..setReleaseMode(ReleaseMode.stop);
@@ -3021,6 +3036,20 @@ class _HomeState extends State<Home>
                     const SizedBox(height: 4),
                     Text(sendToStatus!),
                   ],
+                  SwitchListTile.adaptive(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Drag-out compatibility mode'),
+                    subtitle: const Text(
+                      'Materialize drag copies and include plain-text path payload for strict apps',
+                    ),
+                    value: _dragOutCompatibilityMode,
+                    onChanged: (value) {
+                      setDialogState(() => _dragOutCompatibilityMode = value);
+                      c.setDragOutCompatibilityMode(value);
+                      widget.onDragOutCompatibilityModeChanged(value);
+                    },
+                  ),
                   const SizedBox(height: 8),
                   const Text('Window Layout Presets'),
                   const SizedBox(height: 4),
@@ -5451,6 +5480,7 @@ class Controller extends ChangeNotifier {
   final Set<String> _peerBlocklist = <String>{};
   bool _autoUpdateChecks = false;
   UpdateChannel _updateChannel = UpdateChannel.stable;
+  bool _dragOutCompatibilityMode = false;
   DiscoveryProfile _discoveryProfile = DiscoveryProfile.balanced;
   DateTime _lastDiscoveryProfileEval = DateTime.fromMillisecondsSinceEpoch(0);
   String? latestReleaseTag;
@@ -5584,6 +5614,10 @@ class Controller extends ChangeNotifier {
 
   void setAutoUpdateChecks(bool value) {
     _autoUpdateChecks = value;
+  }
+
+  void setDragOutCompatibilityMode(bool enabled) {
+    _dragOutCompatibilityMode = enabled;
   }
 
   void setUpdateChannel(UpdateChannel channel) {
@@ -6382,9 +6416,14 @@ class Controller extends ChangeNotifier {
     final item = DragItem(localData: s.key, suggestedName: s.name);
     try {
       if (Platform.isWindows) {
-        final dragPath = await _materializeWindowsDragPath(s);
+        final dragPath = _dragOutCompatibilityMode
+            ? await _materializeWindowsDragCompatibilityPath(s)
+            : await _materializeWindowsDragPath(s);
         if (dragPath == null) return null;
         item.add(Formats.fileUri(Uri.file(dragPath, windows: true)));
+        if (_dragOutCompatibilityMode) {
+          item.add(Formats.plainText(dragPath));
+        }
         return item;
       }
 
@@ -6410,6 +6449,41 @@ class Controller extends ChangeNotifier {
         stack: st,
       );
       return null;
+    }
+  }
+
+  Future<String?> _materializeWindowsDragCompatibilityPath(ShareItem s) async {
+    final sourcePath = await _materializeWindowsDragPath(s);
+    if (sourcePath == null || sourcePath.isEmpty) return null;
+    try {
+      final source = File(sourcePath);
+      if (!await source.exists()) return null;
+      final appDir = await _appDataDir();
+      final compatDir = Directory(p.join(appDir.path, 'drag_cache', 'compat'));
+      await compatDir.create(recursive: true);
+      final safeName = _safeFileName(s.name);
+      final target = File(
+        p.join(compatDir.path, '${s.ownerId}_${s.itemId}_$safeName'),
+      );
+      if (await target.exists()) {
+        final len = await target.length();
+        if (len == s.size) {
+          return target.path;
+        }
+      }
+      if (p.normalize(source.path).toLowerCase() ==
+          p.normalize(target.path).toLowerCase()) {
+        return source.path;
+      }
+      await source.copy(target.path);
+      return target.path;
+    } catch (e, st) {
+      _diagnostics.warn(
+        'Compatibility drag materialization fallback for ${s.name}',
+        error: e,
+        stack: st,
+      );
+      return sourcePath;
     }
   }
 
@@ -8319,6 +8393,7 @@ class AppSettings {
     this.startWithWindows = false,
     this.startInTrayOnLaunch = false,
     this.sendToIntegrationEnabled = false,
+    this.dragOutCompatibilityMode = false,
     this.roomChannel = '',
     this.sharedRoomKey = '',
     this.peerAllowlist = '',
@@ -8339,6 +8414,7 @@ class AppSettings {
   final bool startWithWindows;
   final bool startInTrayOnLaunch;
   final bool sendToIntegrationEnabled;
+  final bool dragOutCompatibilityMode;
   final String roomChannel;
   final String sharedRoomKey;
   final String peerAllowlist;
@@ -8359,6 +8435,7 @@ class AppSettings {
     'startWithWindows': startWithWindows,
     'startInTrayOnLaunch': startInTrayOnLaunch,
     'sendToIntegrationEnabled': sendToIntegrationEnabled,
+    'dragOutCompatibilityMode': dragOutCompatibilityMode,
     'roomChannel': roomChannel,
     'sharedRoomKey': sharedRoomKey,
     'peerAllowlist': peerAllowlist,
@@ -8385,6 +8462,7 @@ class AppSettings {
       startWithWindows: json['startWithWindows'] == true,
       startInTrayOnLaunch: json['startInTrayOnLaunch'] == true,
       sendToIntegrationEnabled: json['sendToIntegrationEnabled'] == true,
+      dragOutCompatibilityMode: json['dragOutCompatibilityMode'] == true,
       roomChannel: normalizeRoomChannel((json['roomChannel'] as String? ?? '')),
       sharedRoomKey: (json['sharedRoomKey'] as String? ?? '').trim(),
       peerAllowlist: (json['peerAllowlist'] as String? ?? ''),
