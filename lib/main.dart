@@ -212,6 +212,46 @@ String updateChannelToString(UpdateChannel channel) {
   }
 }
 
+List<String> buildNetworkDiagnosticsHints({
+  required int connectedPeers,
+  required List<String> localIps,
+  required Map<String, int> diagnostics,
+  required bool hasIncompatiblePeers,
+  required bool roomKeyEnabled,
+}) {
+  final hints = <String>[];
+  if (localIps.isEmpty) {
+    hints.add('No active IPv4 address detected. Check adapter/Wi-Fi state.');
+  }
+  if (connectedPeers == 0) {
+    hints.add('No peers connected. Use Send Probe and manual Connect TCP.');
+  }
+  if (hasIncompatiblePeers) {
+    hints.add('Version mismatch detected. Install the same major app version.');
+  }
+  if ((diagnostics['udp_auth_drop'] ?? 0) > 0 ||
+      (diagnostics['tcp_auth_drop'] ?? 0) > 0) {
+    if (roomKeyEnabled) {
+      hints.add('Auth drops detected. Confirm both peers use the same room key.');
+    } else {
+      hints.add('Auth drops detected. If unexpected, clear and re-enter room keys.');
+    }
+  }
+  if ((diagnostics['udp_protocol_mismatch'] ?? 0) > 0 ||
+      (diagnostics['tcp_protocol_mismatch'] ?? 0) > 0) {
+    hints.add('Protocol mismatch traffic detected. Upgrade/downgrade peer app.');
+  }
+  if ((diagnostics['udp_rate_limited'] ?? 0) > 0 ||
+      (diagnostics['tcp_req_rate_limited'] ?? 0) > 0) {
+    hints.add('Rate limiting is active. Reduce rapid probes/reconnect loops.');
+  }
+  hints.add(
+    'Ensure Windows Firewall allows UDP 40405 and TCP 40406 for both peers.',
+  );
+  hints.add('Keep both app windows open during discovery and first sync.');
+  return hints;
+}
+
 bool _matchesItemTypeFilter(ShareItem item, ItemTypeFilter filter) {
   if (filter == ItemTypeFilter.all) return true;
   final ext = p.extension(item.name).toLowerCase();
@@ -1799,6 +1839,16 @@ class _HomeState extends State<Home>
                     Text(connectStatus!),
                   ],
                   const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      const Text('Connectivity'),
+                      const Spacer(),
+                      TextButton(
+                        onPressed: () => unawaited(_showDiagnosticsWizard()),
+                        child: const Text('Troubleshoot'),
+                      ),
+                    ],
+                  ),
                   Text('Peers Online: ${c.connectedPeerCount}'),
                   if (peers.isEmpty) const Text('No peers connected'),
                   for (final p in peers)
@@ -1849,6 +1899,54 @@ class _HomeState extends State<Home>
     );
     keyController.dispose();
     probeController.dispose();
+  }
+
+  Future<void> _showDiagnosticsWizard() async {
+    final hints = buildNetworkDiagnosticsHints(
+      connectedPeers: c.connectedPeerCount,
+      localIps: c.localIps,
+      diagnostics: c.networkDiagnostics,
+      hasIncompatiblePeers: c.incompatiblePeers.isNotEmpty,
+      roomKeyEnabled: _sharedRoomKey.isNotEmpty,
+    );
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Network Troubleshooter'),
+        content: SizedBox(
+          width: 520,
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (var i = 0; i < hints.length; i++)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: Text('${i + 1}. ${hints[i]}'),
+                  ),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              await c.refreshAll();
+              if (!context.mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Peer refresh requested')),
+              );
+            },
+            child: const Text('Refresh Peers'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
   }
 }
 
