@@ -317,4 +317,58 @@ void main() {
     expect(windowLayoutPresetForSlot(removed, 1), isNull);
     expect(windowLayoutPresetForSlot(removed, 2), isNotNull);
   });
+
+  test(
+    'computeTaskbarTransferProgress returns -1 when no running transfers',
+    () {
+      final done = TransferEntry(
+        id: 't1',
+        name: 'done.bin',
+        peerName: 'Peer',
+        direction: TransferDirection.download,
+        totalBytes: 100,
+        startedAt: DateTime.now(),
+      )..complete(state: TransferState.completed);
+      expect(computeTaskbarTransferProgress([done]), -1);
+    },
+  );
+
+  test(
+    'computeTaskbarTransferProgress aggregates running transfer progress',
+    () {
+      final a = TransferEntry(
+        id: 't1',
+        name: 'a.bin',
+        peerName: 'Peer',
+        direction: TransferDirection.download,
+        totalBytes: 100,
+        startedAt: DateTime.now(),
+      )..transferredBytes = 25;
+      final b = TransferEntry(
+        id: 't2',
+        name: 'b.bin',
+        peerName: 'Peer',
+        direction: TransferDirection.download,
+        totalBytes: 300,
+        startedAt: DateTime.now(),
+      )..transferredBytes = 150;
+      final progress = computeTaskbarTransferProgress([a, b]);
+      expect(progress, closeTo(0.4375, 0.0001));
+    },
+  );
+
+  test(
+    'computeTaskbarTransferProgress treats zero-byte running transfer as complete',
+    () {
+      final empty = TransferEntry(
+        id: 't1',
+        name: 'empty.txt',
+        peerName: 'Peer',
+        direction: TransferDirection.download,
+        totalBytes: 0,
+        startedAt: DateTime.now(),
+      );
+      expect(computeTaskbarTransferProgress([empty]), 1);
+    },
+  );
 }

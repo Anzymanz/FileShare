@@ -801,6 +801,30 @@ String describeWindowLayoutPreset(WindowLayoutPreset preset) {
   return '$size $position | $mode$display$when';
 }
 
+double computeTaskbarTransferProgress(Iterable<TransferEntry> transfers) {
+  final running = transfers
+      .where((entry) => entry.state == TransferState.running)
+      .toList(growable: false);
+  if (running.isEmpty) {
+    return -1;
+  }
+  var weightedTotal = 0;
+  var weightedDone = 0;
+  for (final entry in running) {
+    if (entry.totalBytes <= 0) {
+      weightedTotal += 1;
+      weightedDone += 1;
+      continue;
+    }
+    weightedTotal += entry.totalBytes;
+    weightedDone += entry.transferredBytes.clamp(0, entry.totalBytes);
+  }
+  if (weightedTotal <= 0) {
+    return -1;
+  }
+  return (weightedDone / weightedTotal).clamp(0.0, 1.0).toDouble();
+}
+
 int _clampRateLimitMBps(Object? raw, int fallback) {
   final parsed = (raw is num) ? raw.toInt() : int.tryParse('$raw');
   if (parsed == null) return fallback;
@@ -1219,6 +1243,7 @@ class _HomeState extends State<Home>
   Timer? _windowSaveDebounce;
   late final AnimationController _shakeController;
   late final Animation<double> _shakeProgress;
+  double? _lastTaskbarProgress;
 
   @override
   void initState() {
@@ -1450,6 +1475,7 @@ class _HomeState extends State<Home>
         unawaited(_showTrayNotification('FileShare', 'You received a nudge.'));
       }
     }
+    unawaited(_syncTaskbarTransferProgress());
     if (mounted) setState(() {});
   }
 
@@ -1879,6 +1905,7 @@ class _HomeState extends State<Home>
   void onWindowRestore() {
     _isHiddenToTray = false;
     _scheduleWindowSave();
+    unawaited(_syncTaskbarTransferProgress(force: true));
   }
 
   @override
@@ -1985,6 +2012,26 @@ class _HomeState extends State<Home>
     widget.onWindowLayoutPresetsChanged(next);
   }
 
+  Future<void> _syncTaskbarTransferProgress({
+    bool force = false,
+    double? overrideProgress,
+  }) async {
+    if (!Platform.isWindows || _isTest) return;
+    final progress =
+        (overrideProgress ?? computeTaskbarTransferProgress(c.transfers))
+            .toDouble();
+    if (!force && _lastTaskbarProgress != null) {
+      final last = _lastTaskbarProgress!;
+      if ((progress - last).abs() < 0.01) {
+        return;
+      }
+    }
+    try {
+      await windowManager.setProgressBar(progress);
+      _lastTaskbarProgress = progress;
+    } catch (_) {}
+  }
+
   void _playNudgeSound() {
     unawaited(() async {
       try {
@@ -2038,6 +2085,7 @@ class _HomeState extends State<Home>
       // Re-apply after hide to ensure the taskbar state sticks.
       await windowManager.setSkipTaskbar(true);
       _isHiddenToTray = true;
+      await _syncTaskbarTransferProgress(force: true, overrideProgress: -1);
       if (notificationTitle != null && notificationBody != null) {
         await _showTrayNotification(notificationTitle, notificationBody);
       }
@@ -2057,6 +2105,7 @@ class _HomeState extends State<Home>
       }
       await windowManager.focus();
       _isHiddenToTray = false;
+      await _syncTaskbarTransferProgress(force: true);
       await _disposeTray();
     } catch (_) {}
   }
@@ -2145,6 +2194,7 @@ class _HomeState extends State<Home>
   Future<void> _quitApplication() async {
     _isQuitting = true;
     _diagnostics.info('Application shutdown requested');
+    await _syncTaskbarTransferProgress(force: true, overrideProgress: -1);
     await windowManager.setPreventClose(false);
     await windowManager.setSkipTaskbar(false);
     await _disposeTray();
@@ -2197,6 +2247,7 @@ class _HomeState extends State<Home>
   @override
   void dispose() {
     c.removeListener(_changed);
+    unawaited(_syncTaskbarTransferProgress(force: true, overrideProgress: -1));
     c.dispose();
     _searchController.dispose();
     unawaited(_nudgeAudioPlayer.dispose());
