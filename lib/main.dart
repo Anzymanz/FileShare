@@ -784,6 +784,74 @@ class _HomeState extends State<Home>
     );
   }
 
+  Future<void> _copyDirectory(Directory source, Directory target) async {
+    await target.create(recursive: true);
+    await for (final entity in source.list(recursive: true, followLinks: false)) {
+      final relativePath = p.relative(entity.path, from: source.path);
+      final destinationPath = p.join(target.path, relativePath);
+      if (entity is Directory) {
+        await Directory(destinationPath).create(recursive: true);
+      } else if (entity is File) {
+        await File(destinationPath).parent.create(recursive: true);
+        await entity.copy(destinationPath);
+      }
+    }
+  }
+
+  Future<String> _exportDiagnosticsBundle() async {
+    final targetRoot = await fs.getDirectoryPath(
+      initialDirectory: _lastDownloadDirectory,
+      confirmButtonText: 'Export',
+    );
+    if (targetRoot == null || targetRoot.trim().isEmpty) {
+      return 'Export canceled';
+    }
+    final stamp = DateTime.now().toIso8601String().replaceAll(':', '-');
+    final bundle = Directory(p.join(targetRoot, 'FileShare-Diagnostics-$stamp'));
+    await bundle.create(recursive: true);
+    final appDataDir = await _appDataDir();
+
+    for (var i = 0; i <= 5; i++) {
+      final suffix = i == 0 ? '' : '.$i';
+      final src = File(p.join(appDataDir.path, 'fileshare.log$suffix'));
+      if (await src.exists()) {
+        await src.copy(p.join(bundle.path, src.uri.pathSegments.last));
+      }
+    }
+
+    final settingsFile = await _appSettingsFile();
+    if (await settingsFile.exists()) {
+      await settingsFile.copy(p.join(bundle.path, 'settings.json'));
+    }
+    final windowStateFile = await _windowStateFile();
+    if (await windowStateFile.exists()) {
+      await windowStateFile.copy(p.join(bundle.path, 'window_state.json'));
+    }
+
+    final crashDir = Directory(p.join(appDataDir.path, 'crashes'));
+    if (await crashDir.exists()) {
+      await _copyDirectory(crashDir, Directory(p.join(bundle.path, 'crashes')));
+    }
+
+    final summary = <String, dynamic>{
+      'generatedAtUtc': DateTime.now().toUtc().toIso8601String(),
+      'deviceName': c.deviceName,
+      'deviceId': c.deviceId,
+      'listenPort': c.listenPort,
+      'protocol': '$_protocolMajor.$_protocolMinor',
+      'connectedPeers': c.connectedPeerCount,
+      'localIps': c.localIps,
+      'roomKeyEnabled': _sharedRoomKey.isNotEmpty,
+      'latencyProfilingEnabled': c.latencyProfilingEnabled,
+      'networkDiagnostics': c.networkDiagnostics,
+    };
+    await File(p.join(bundle.path, 'summary.json')).writeAsString(
+      const JsonEncoder.withIndent('  ').convert(summary),
+      flush: true,
+    );
+    return 'Diagnostics exported: ${bundle.path}';
+  }
+
   @override
   void onWindowFocus() {
     _isFocused = true;
@@ -1272,6 +1340,8 @@ class _HomeState extends State<Home>
     String? connectStatus;
     String? updateStatus;
     bool checkingUpdates = false;
+    String? exportStatus;
+    bool exportingDiagnostics = false;
     bool profilingEnabled = c.latencyProfilingEnabled;
     final latencySamples = c.peerFirstSyncLatency.entries.toList(growable: false)
       ..sort((a, b) => a.key.compareTo(b.key));
@@ -1377,6 +1447,37 @@ class _HomeState extends State<Home>
                   if (updateStatus != null) ...[
                     const SizedBox(height: 4),
                     Text(updateStatus!),
+                  ],
+                  const SizedBox(height: 4),
+                  Row(
+                    children: [
+                      const Spacer(),
+                      TextButton(
+                        onPressed: exportingDiagnostics
+                            ? null
+                            : () async {
+                                setDialogState(() {
+                                  exportingDiagnostics = true;
+                                  exportStatus = 'Exporting diagnostics...';
+                                });
+                                final result = await _exportDiagnosticsBundle();
+                                if (!context.mounted) return;
+                                setDialogState(() {
+                                  exportingDiagnostics = false;
+                                  exportStatus = result;
+                                });
+                              },
+                        child: Text(
+                          exportingDiagnostics
+                              ? 'Exporting...'
+                              : 'Export Diagnostics',
+                        ),
+                      ),
+                    ],
+                  ),
+                  if (exportStatus != null) ...[
+                    const SizedBox(height: 4),
+                    Text(exportStatus!),
                   ],
                   const SizedBox(height: 8),
                   const Text('Manual Peer Connect'),
