@@ -101,7 +101,9 @@ void main() {
     );
 
     expect(
-      find.byWidgetPredicate((w) => w.runtimeType.toString() == 'DraggableWidget'),
+      find.byWidgetPredicate(
+        (w) => w.runtimeType.toString() == 'DraggableWidget',
+      ),
       findsOneWidget,
     );
 
@@ -233,5 +235,62 @@ void main() {
     await tester.tap(find.text('Pin'));
     await tester.pumpAndSettle();
     expect(pinCalls, 1);
+  });
+
+  testWidgets('icon tile context menu triggers Edit Note action', (
+    WidgetTester tester,
+  ) async {
+    var noteCalls = 0;
+    final item = ShareItem(
+      ownerId: 'peer-a',
+      owner: 'Peer A',
+      itemId: 'item-4',
+      name: 'note-me.txt',
+      rel: 'note-me.txt',
+      size: 44,
+      local: false,
+      path: null,
+      iconBytes: null,
+      peerId: 'peer-a',
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: SizedBox(
+              width: 180,
+              height: 180,
+              child: IconTile(
+                item: item,
+                createItem: (_) async => null,
+                isFavorite: false,
+                onToggleFavorite: () {},
+                onEditNote: () async => noteCalls++,
+                onRemove: null,
+                onDownload: null,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final center = tester.getCenter(find.byType(IconTile));
+    final gesture = await tester.createGesture(
+      kind: PointerDeviceKind.mouse,
+      buttons: kSecondaryMouseButton,
+    );
+    await gesture.addPointer(location: center);
+    await tester.pump();
+    await gesture.down(center);
+    await tester.pumpAndSettle();
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    expect(find.text('Edit Note...'), findsOneWidget);
+    await tester.tap(find.text('Edit Note...'));
+    await tester.pumpAndSettle();
+    expect(noteCalls, 1);
   });
 }

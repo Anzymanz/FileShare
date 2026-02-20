@@ -234,4 +234,11 @@ void main() {
     expect(summary.remote.map((e) => e.key).toSet(), {remoteB.key});
     expect(summary.remoteOwnerIds, {'peer-b'});
   });
+
+  test('normalizeItemNote trims and caps note length', () {
+    expect(normalizeItemNote('   hello note   '), 'hello note');
+    expect(normalizeItemNote('   '), '');
+    final long = 'x' * 500;
+    expect(normalizeItemNote(long).length, lessThanOrEqualTo(300));
+  });
 }

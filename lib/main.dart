@@ -48,6 +48,7 @@ const int _maxPeerNameChars = 80;
 const int _maxPeerIdChars = 128;
 const int _maxIconBytes = 256 * 1024;
 const int _maxIconBase64Chars = 360 * 1024;
+const int _maxItemNoteChars = 300;
 const int _maxConcurrentInboundClients = 64;
 const int _maxConcurrentTransfersPerPeer = 3;
 const int _perPeerUploadRateLimitBytesPerSecond = 50 * 1024 * 1024;
@@ -517,6 +518,13 @@ bool _stringSetEquals(Set<String> a, Set<String> b) {
   return true;
 }
 
+String normalizeItemNote(String raw) {
+  final trimmed = raw.trim();
+  if (trimmed.isEmpty) return '';
+  if (trimmed.length <= _maxItemNoteChars) return trimmed;
+  return trimmed.substring(0, _maxItemNoteChars).trimRight();
+}
+
 bool _isValidStartupExecutable(String executablePath) {
   final fileName = p.basename(executablePath).toLowerCase();
   return fileName == 'fileshare.exe';
@@ -829,6 +837,7 @@ class _HomeState extends State<Home>
   double _iconSize = 64;
   Set<String> _favoriteKeys = <String>{};
   Set<String> _selectedItemKeys = <String>{};
+  Map<String, String> _itemNotes = <String, String>{};
   final Map<String, DateTime> _itemFirstSeenAt = <String, DateTime>{};
   bool _trayInitialized = false;
   bool _isHiddenToTray = false;
@@ -880,6 +889,11 @@ class _HomeState extends State<Home>
       if (!mounted) return;
       setState(() => _favoriteKeys = loaded);
     }());
+    unawaited(() async {
+      final loaded = await _loadItemNotes();
+      if (!mounted) return;
+      setState(() => _itemNotes = loaded);
+    }());
     if (widget.startInTrayRequested && Platform.isWindows && !_isTest) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         unawaited(_hideToTray(force: true));
@@ -896,6 +910,64 @@ class _HomeState extends State<Home>
     }
     setState(() => _favoriteKeys = next);
     await _saveFavoriteKeys(next);
+  }
+
+  String? _noteForItem(ShareItem item) => _itemNotes[item.key];
+
+  Future<void> _setItemNote(ShareItem item, String rawNote) async {
+    final note = normalizeItemNote(rawNote);
+    final next = <String, String>{..._itemNotes};
+    if (note.isEmpty) {
+      next.remove(item.key);
+    } else {
+      next[item.key] = note;
+    }
+    setState(() => _itemNotes = next);
+    await _saveItemNotes(next);
+  }
+
+  Future<void> _editItemNote(ShareItem item) async {
+    final controller = TextEditingController(text: _noteForItem(item) ?? '');
+    final action = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Note: ${p.basename(item.name)}'),
+        content: SizedBox(
+          width: 420,
+          child: TextField(
+            controller: controller,
+            minLines: 4,
+            maxLines: 8,
+            maxLength: _maxItemNoteChars,
+            decoration: const InputDecoration(
+              hintText: 'Add a short note/comment for this item',
+              isDense: true,
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, 'cancel'),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, 'clear'),
+            child: const Text('Clear'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, 'save'),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    final decision = action ?? 'cancel';
+    if (decision == 'cancel') return;
+    if (decision == 'clear') {
+      await _setItemNote(item, '');
+      return;
+    }
+    await _setItemNote(item, controller.text);
   }
 
   void _toggleItemSelection(ShareItem item) {
@@ -1837,6 +1909,8 @@ class _HomeState extends State<Home>
                                             favoriteKeys: _favoriteKeys,
                                             isFavorite: _isFavorite,
                                             onToggleFavorite: _toggleFavorite,
+                                            noteForItem: _noteForItem,
+                                            onEditNote: _editItemNote,
                                             onRemove: (item) =>
                                                 c.removeLocal(item.itemId),
                                             onDownload: _downloadRemoteItem,
@@ -3082,6 +3156,8 @@ class _ExplorerGrid extends StatelessWidget {
     required this.favoriteKeys,
     required this.isFavorite,
     required this.onToggleFavorite,
+    required this.noteForItem,
+    required this.onEditNote,
     required this.onRemove,
     required this.onDownload,
     required this.onDownloadAllFromOwner,
@@ -3097,6 +3173,8 @@ class _ExplorerGrid extends StatelessWidget {
   final Set<String> favoriteKeys;
   final bool Function(ShareItem) isFavorite;
   final Future<void> Function(ShareItem) onToggleFavorite;
+  final String? Function(ShareItem) noteForItem;
+  final Future<void> Function(ShareItem) onEditNote;
   final ValueChanged<ShareItem> onRemove;
   final Future<void> Function(ShareItem) onDownload;
   final Future<void> Function(String ownerId, String ownerName, List<ShareItem>)
@@ -3241,6 +3319,8 @@ class _ExplorerGrid extends StatelessWidget {
                   onTap: () => onToggleSelection(item),
                   isFavorite: isFavorite(item),
                   onToggleFavorite: () => onToggleFavorite(item),
+                  note: noteForItem(item),
+                  onEditNote: () => onEditNote(item),
                   onRemove: item.local ? () => onRemove(item) : null,
                   onDownload: item.local ? null : () => onDownload(item),
                   iconSize: normalizedIconSize,
@@ -3263,6 +3343,8 @@ class _ExplorerGrid extends StatelessWidget {
                   onTap: () => onToggleSelection(item),
                   isFavorite: isFavorite(item),
                   onToggleFavorite: () => onToggleFavorite(item),
+                  note: noteForItem(item),
+                  onEditNote: () => onEditNote(item),
                   onRemove: item.local ? () => onRemove(item) : null,
                   onDownload: item.local ? null : () => onDownload(item),
                   compact: true,
@@ -3308,6 +3390,8 @@ class IconTile extends StatefulWidget {
     this.onTap,
     required this.isFavorite,
     required this.onToggleFavorite,
+    this.note,
+    this.onEditNote,
     required this.onRemove,
     required this.onDownload,
     this.compact = false,
@@ -3320,6 +3404,8 @@ class IconTile extends StatefulWidget {
   final VoidCallback? onTap;
   final bool isFavorite;
   final VoidCallback onToggleFavorite;
+  final String? note;
+  final Future<void> Function()? onEditNote;
   final VoidCallback? onRemove;
   final Future<void> Function()? onDownload;
   final bool compact;
@@ -3334,6 +3420,7 @@ class _IconTileState extends State<IconTile> {
   static const int _menuDownloadAs = 1;
   static const int _menuRemove = 2;
   static const int _menuToggleFavorite = 3;
+  static const int _menuEditNote = 4;
 
   Future<DragItem?> _provider(DragItemRequest r) async {
     void upd() {
@@ -3383,6 +3470,11 @@ class _IconTileState extends State<IconTile> {
           value: _menuToggleFavorite,
           child: Text(widget.isFavorite ? 'Unpin' : 'Pin'),
         ),
+        if (widget.onEditNote != null)
+          const PopupMenuItem<int>(
+            value: _menuEditNote,
+            child: Text('Edit Note...'),
+          ),
         if (widget.onDownload != null)
           const PopupMenuItem<int>(
             value: _menuDownloadAs,
@@ -3400,6 +3492,9 @@ class _IconTileState extends State<IconTile> {
       case _menuDownloadAs:
         await widget.onDownload?.call();
         break;
+      case _menuEditNote:
+        await widget.onEditNote?.call();
+        break;
       case _menuRemove:
         widget.onRemove?.call();
         break;
@@ -3412,6 +3507,8 @@ class _IconTileState extends State<IconTile> {
     final iconData = _iconForName(widget.item.name);
     final iconColor = _iconColorForName(widget.item.name, theme);
     final iconBytes = widget.item.iconBytes;
+    final note = widget.note == null ? '' : normalizeItemNote(widget.note!);
+    final hasNote = note.isNotEmpty;
     final iconSize = widget.iconSize.clamp(44.0, 96.0);
     final iconGlyphSize = max(20.0, min(iconSize * 0.56, 44.0));
     final label = p.basename(widget.item.name);
@@ -3512,6 +3609,24 @@ class _IconTileState extends State<IconTile> {
               ),
             ),
           ),
+        if (hasNote)
+          Positioned(
+            left: 4,
+            bottom: 4,
+            child: Container(
+              width: 14,
+              height: 14,
+              decoration: BoxDecoration(
+                color: theme.colorScheme.secondaryContainer,
+                shape: BoxShape.circle,
+              ),
+              child: Icon(
+                Icons.sticky_note_2_outlined,
+                size: 10,
+                color: theme.colorScheme.onSecondaryContainer,
+              ),
+            ),
+          ),
       ],
     );
 
@@ -3534,6 +3649,16 @@ class _IconTileState extends State<IconTile> {
             onPressed: () => widget.onDownload?.call(),
             icon: const Icon(Icons.download, size: 16),
           ),
+        if (widget.onEditNote != null)
+          IconButton(
+            tooltip: hasNote ? 'Edit note' : 'Add note',
+            visualDensity: VisualDensity.compact,
+            onPressed: () => widget.onEditNote?.call(),
+            icon: Icon(
+              hasNote ? Icons.sticky_note_2 : Icons.sticky_note_2_outlined,
+              size: 16,
+            ),
+          ),
         if (widget.onRemove != null)
           IconButton(
             tooltip: 'Remove',
@@ -3552,8 +3677,9 @@ class _IconTileState extends State<IconTile> {
           opacity: dragging ? 0.6 : 1,
           duration: const Duration(milliseconds: 90),
           child: Tooltip(
-            message:
-                '${widget.item.rel}\n${_fmt(widget.item.size)} • ${widget.item.owner}',
+            message: hasNote
+                ? '${widget.item.rel}\n${_fmt(widget.item.size)} • ${widget.item.owner}\nNote: $note'
+                : '${widget.item.rel}\n${_fmt(widget.item.size)} • ${widget.item.owner}',
             waitDuration: const Duration(milliseconds: 500),
             child: GestureDetector(
               behavior: HitTestBehavior.opaque,
@@ -6752,6 +6878,11 @@ Future<File> _favoritesFile() async {
   return File(p.join(dir.path, 'favorites.json'));
 }
 
+Future<File> _itemNotesFile() async {
+  final dir = await _appDataDir();
+  return File(p.join(dir.path, 'item_notes.json'));
+}
+
 Future<Set<String>> _loadFavoriteKeys() async {
   try {
     final file = await _favoritesFile();
@@ -6777,6 +6908,42 @@ Future<void> _saveFavoriteKeys(Set<String> keys) async {
     final file = await _favoritesFile();
     final sorted = keys.toList()..sort();
     await file.writeAsString(jsonEncode(sorted), flush: true);
+  } catch (_) {}
+}
+
+Future<Map<String, String>> _loadItemNotes() async {
+  try {
+    final file = await _itemNotesFile();
+    if (!await file.exists()) return <String, String>{};
+    final decoded = jsonDecode(await file.readAsString());
+    if (decoded is! Map) return <String, String>{};
+    final out = <String, String>{};
+    for (final entry in decoded.entries) {
+      final key = entry.key;
+      if (key is! String) continue;
+      if (key.isEmpty || key.length > 512) continue;
+      if (entry.value is! String) continue;
+      final note = normalizeItemNote(entry.value as String);
+      if (note.isEmpty) continue;
+      out[key] = note;
+    }
+    return out;
+  } catch (_) {
+    return <String, String>{};
+  }
+}
+
+Future<void> _saveItemNotes(Map<String, String> notes) async {
+  try {
+    final file = await _itemNotesFile();
+    final keys = notes.keys.toList()..sort();
+    final out = <String, String>{};
+    for (final key in keys) {
+      final normalized = normalizeItemNote(notes[key] ?? '');
+      if (normalized.isEmpty) continue;
+      out[key] = normalized;
+    }
+    await file.writeAsString(jsonEncode(out), flush: true);
   } catch (_) {}
 }
 
