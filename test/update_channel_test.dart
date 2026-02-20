@@ -66,4 +66,32 @@ void main() {
     final restored = AppSettings.fromJson(json);
     expect(restored.roomChannel, 'team-alpha');
   });
+
+  test('AppSettings serializes transfer/global rate caps', () {
+    const settings = AppSettings(
+      darkMode: true,
+      themeIndex: 0,
+      soundOnNudge: false,
+      transferRateLimitMBps: 25,
+      globalRateLimitMBps: 200,
+    );
+
+    final json = settings.toJson();
+    final restored = AppSettings.fromJson(json);
+    expect(restored.transferRateLimitMBps, 25);
+    expect(restored.globalRateLimitMBps, 200);
+  });
+
+  test('AppSettings clamps invalid transfer/global rate caps', () {
+    final restored = AppSettings.fromJson(<String, dynamic>{
+      'darkMode': true,
+      'themeIndex': 0,
+      'soundOnNudge': false,
+      'transferRateLimitMBps': 0,
+      'globalRateLimitMBps': 999999,
+    });
+
+    expect(restored.transferRateLimitMBps, 1);
+    expect(restored.globalRateLimitMBps, 5000);
+  });
 }

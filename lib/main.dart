@@ -51,8 +51,8 @@ const int _maxIconBase64Chars = 360 * 1024;
 const int _maxItemNoteChars = 300;
 const int _maxConcurrentInboundClients = 64;
 const int _maxConcurrentTransfersPerPeer = 3;
-const int _perPeerUploadRateLimitBytesPerSecond = 50 * 1024 * 1024;
-const int _perPeerDownloadRateLimitBytesPerSecond = 50 * 1024 * 1024;
+const int _defaultTransferRateLimitMBps = 50;
+const int _defaultGlobalRateLimitMBps = 200;
 const int _dragCacheMaxBytes = 2 * 1024 * 1024 * 1024; // 2 GiB
 const Duration _dragCacheMaxAge = Duration(days: 7);
 const Duration _housekeepingInterval = Duration(minutes: 15);
@@ -577,6 +577,12 @@ String normalizeRoomChannel(String raw) {
   return cleaned.substring(0, 64);
 }
 
+int _clampRateLimitMBps(Object? raw, int fallback) {
+  final parsed = (raw is num) ? raw.toInt() : int.tryParse('$raw');
+  if (parsed == null) return fallback;
+  return parsed.clamp(1, 5000);
+}
+
 String? normalizeSha256Hex(Object? raw) {
   if (raw is! String) return null;
   final value = raw.trim().toLowerCase();
@@ -690,6 +696,8 @@ class _MyAppState extends State<MyApp> {
   late String sharedRoomKey;
   late String peerAllowlist;
   late String peerBlocklist;
+  late int transferRateLimitMBps;
+  late int globalRateLimitMBps;
   late bool autoUpdateChecks;
   late UpdateChannel updateChannel;
   late DuplicateHandlingMode duplicateHandlingMode;
@@ -710,6 +718,8 @@ class _MyAppState extends State<MyApp> {
     sharedRoomKey = widget.initialSettings.sharedRoomKey;
     peerAllowlist = widget.initialSettings.peerAllowlist;
     peerBlocklist = widget.initialSettings.peerBlocklist;
+    transferRateLimitMBps = widget.initialSettings.transferRateLimitMBps;
+    globalRateLimitMBps = widget.initialSettings.globalRateLimitMBps;
     autoUpdateChecks = widget.initialSettings.autoUpdateChecks;
     updateChannel = widget.initialSettings.updateChannel;
     duplicateHandlingMode = widget.initialSettings.duplicateHandlingMode;
@@ -728,6 +738,8 @@ class _MyAppState extends State<MyApp> {
         sharedRoomKey: sharedRoomKey,
         peerAllowlist: peerAllowlist,
         peerBlocklist: peerBlocklist,
+        transferRateLimitMBps: transferRateLimitMBps,
+        globalRateLimitMBps: globalRateLimitMBps,
         autoUpdateChecks: autoUpdateChecks,
         updateChannel: updateChannel,
         duplicateHandlingMode: duplicateHandlingMode,
@@ -769,6 +781,8 @@ class _MyAppState extends State<MyApp> {
         initialSharedRoomKey: sharedRoomKey,
         initialPeerAllowlist: peerAllowlist,
         initialPeerBlocklist: peerBlocklist,
+        initialTransferRateLimitMBps: transferRateLimitMBps,
+        initialGlobalRateLimitMBps: globalRateLimitMBps,
         initialAutoUpdateChecks: autoUpdateChecks,
         initialUpdateChannel: updateChannel,
         initialDuplicateHandlingMode: duplicateHandlingMode,
@@ -812,6 +826,14 @@ class _MyAppState extends State<MyApp> {
           setState(() => peerBlocklist = value);
           unawaited(_persistSettings());
         },
+        onTransferRateLimitMBpsChanged: (value) {
+          setState(() => transferRateLimitMBps = value);
+          unawaited(_persistSettings());
+        },
+        onGlobalRateLimitMBpsChanged: (value) {
+          setState(() => globalRateLimitMBps = value);
+          unawaited(_persistSettings());
+        },
         onAutoUpdateChecksChanged: (value) {
           setState(() => autoUpdateChecks = value);
           unawaited(_persistSettings());
@@ -843,6 +865,8 @@ class Home extends StatefulWidget {
     required this.initialSharedRoomKey,
     required this.initialPeerAllowlist,
     required this.initialPeerBlocklist,
+    required this.initialTransferRateLimitMBps,
+    required this.initialGlobalRateLimitMBps,
     required this.initialAutoUpdateChecks,
     required this.initialUpdateChannel,
     required this.initialDuplicateHandlingMode,
@@ -856,6 +880,8 @@ class Home extends StatefulWidget {
     required this.onSharedRoomKeyChanged,
     required this.onPeerAllowlistChanged,
     required this.onPeerBlocklistChanged,
+    required this.onTransferRateLimitMBpsChanged,
+    required this.onGlobalRateLimitMBpsChanged,
     required this.onAutoUpdateChecksChanged,
     required this.onUpdateChannelChanged,
     required this.onDuplicateHandlingModeChanged,
@@ -872,6 +898,8 @@ class Home extends StatefulWidget {
   final String initialSharedRoomKey;
   final String initialPeerAllowlist;
   final String initialPeerBlocklist;
+  final int initialTransferRateLimitMBps;
+  final int initialGlobalRateLimitMBps;
   final bool initialAutoUpdateChecks;
   final UpdateChannel initialUpdateChannel;
   final DuplicateHandlingMode initialDuplicateHandlingMode;
@@ -885,6 +913,8 @@ class Home extends StatefulWidget {
   final ValueChanged<String> onSharedRoomKeyChanged;
   final ValueChanged<String> onPeerAllowlistChanged;
   final ValueChanged<String> onPeerBlocklistChanged;
+  final ValueChanged<int> onTransferRateLimitMBpsChanged;
+  final ValueChanged<int> onGlobalRateLimitMBpsChanged;
   final ValueChanged<bool> onAutoUpdateChecksChanged;
   final ValueChanged<UpdateChannel> onUpdateChannelChanged;
   final ValueChanged<DuplicateHandlingMode> onDuplicateHandlingModeChanged;
@@ -913,6 +943,8 @@ class _HomeState extends State<Home>
   String _sharedRoomKey = '';
   String _peerAllowlist = '';
   String _peerBlocklist = '';
+  int _transferRateLimitMBps = _defaultTransferRateLimitMBps;
+  int _globalRateLimitMBps = _defaultGlobalRateLimitMBps;
   bool _autoUpdateChecks = false;
   UpdateChannel _updateChannel = UpdateChannel.stable;
   DuplicateHandlingMode _duplicateHandlingMode = DuplicateHandlingMode.rename;
@@ -946,6 +978,8 @@ class _HomeState extends State<Home>
     _sharedRoomKey = widget.initialSharedRoomKey;
     _peerAllowlist = widget.initialPeerAllowlist;
     _peerBlocklist = widget.initialPeerBlocklist;
+    _transferRateLimitMBps = widget.initialTransferRateLimitMBps;
+    _globalRateLimitMBps = widget.initialGlobalRateLimitMBps;
     _autoUpdateChecks = widget.initialAutoUpdateChecks;
     _updateChannel = widget.initialUpdateChannel;
     _duplicateHandlingMode = widget.initialDuplicateHandlingMode;
@@ -955,6 +989,10 @@ class _HomeState extends State<Home>
     c.setTrustLists(
       allowlist: parseTrustListInput(_peerAllowlist),
       blocklist: parseTrustListInput(_peerBlocklist),
+    );
+    c.setBandwidthCapsMBps(
+      transferRateLimitMBps: _transferRateLimitMBps,
+      globalRateLimitMBps: _globalRateLimitMBps,
     );
     c.setAutoUpdateChecks(_autoUpdateChecks);
     c.setUpdateChannel(_updateChannel);
@@ -2089,6 +2127,16 @@ class _HomeState extends State<Home>
     String? exportStatus;
     bool exportingDiagnostics = false;
     bool profilingEnabled = c.latencyProfilingEnabled;
+    const transferRateOptions = <int>[5, 10, 25, 50, 100, 200, 500, 1000];
+    const globalRateOptions = <int>[10, 25, 50, 100, 200, 500, 1000, 2000];
+    final transferOptions = <int>{
+      ...transferRateOptions,
+      _transferRateLimitMBps,
+    }.toList()..sort();
+    final globalOptions = <int>{
+      ...globalRateOptions,
+      _globalRateLimitMBps,
+    }.toList()..sort();
     final latencySamples = c.peerFirstSyncLatency.entries.toList(
       growable: false,
     )..sort((a, b) => a.key.compareTo(b.key));
@@ -2268,6 +2316,64 @@ class _HomeState extends State<Home>
                           if (value == null) return;
                           setDialogState(() => _duplicateHandlingMode = value);
                           widget.onDuplicateHandlingModeChanged(value);
+                        },
+                      ),
+                    ],
+                  ),
+                  Row(
+                    children: [
+                      const Text('Per-transfer cap:'),
+                      const SizedBox(width: 8),
+                      DropdownButton<int>(
+                        value: _transferRateLimitMBps,
+                        items: transferOptions
+                            .map(
+                              (value) => DropdownMenuItem<int>(
+                                value: value,
+                                child: Text('$value MB/s'),
+                              ),
+                            )
+                            .toList(growable: false),
+                        onChanged: (value) {
+                          if (value == null) return;
+                          final transferCap = value;
+                          final globalCap = max(_globalRateLimitMBps, value);
+                          setDialogState(() {
+                            _transferRateLimitMBps = transferCap;
+                            _globalRateLimitMBps = globalCap;
+                          });
+                          c.setBandwidthCapsMBps(
+                            transferRateLimitMBps: transferCap,
+                            globalRateLimitMBps: globalCap,
+                          );
+                          widget.onTransferRateLimitMBpsChanged(transferCap);
+                          widget.onGlobalRateLimitMBpsChanged(globalCap);
+                        },
+                      ),
+                      const SizedBox(width: 14),
+                      const Text('Global cap:'),
+                      const SizedBox(width: 8),
+                      DropdownButton<int>(
+                        value: _globalRateLimitMBps,
+                        items: globalOptions
+                            .map(
+                              (value) => DropdownMenuItem<int>(
+                                value: value,
+                                child: Text('$value MB/s'),
+                              ),
+                            )
+                            .toList(growable: false),
+                        onChanged: (value) {
+                          if (value == null) return;
+                          final globalCap = max(value, _transferRateLimitMBps);
+                          setDialogState(
+                            () => _globalRateLimitMBps = globalCap,
+                          );
+                          c.setBandwidthCapsMBps(
+                            transferRateLimitMBps: _transferRateLimitMBps,
+                            globalRateLimitMBps: globalCap,
+                          );
+                          widget.onGlobalRateLimitMBpsChanged(globalCap);
                         },
                       ),
                     ],
@@ -4259,6 +4365,7 @@ class Controller extends ChangeNotifier {
   final _SlidingRateLimiter _tcpRateLimiter = _SlidingRateLimiter();
   final _PerPeerRateLimiter _uploadRateLimiter = _PerPeerRateLimiter();
   final _PerPeerRateLimiter _downloadRateLimiter = _PerPeerRateLimiter();
+  final _PerPeerRateLimiter _globalBandwidthLimiter = _PerPeerRateLimiter();
   final Map<String, int> _activePeerUploads = <String, int>{};
   final Map<String, int> _activePeerDownloads = <String, int>{};
   final Map<String, int> _networkDiagnostics = <String, int>{};
@@ -4285,6 +4392,10 @@ class Controller extends ChangeNotifier {
   final int _simulatedDropPercent =
       (int.tryParse(Platform.environment[_simDropEnv] ?? '') ?? 0).clamp(0, 95);
   final Random _simRandom = Random();
+  int _transferRateLimitBytesPerSecond =
+      _defaultTransferRateLimitMBps * 1024 * 1024;
+  int _globalRateLimitBytesPerSecond =
+      _defaultGlobalRateLimitMBps * 1024 * 1024;
 
   String get roomChannel => _roomChannel;
   String get sharedRoomKey => _sharedRoomKey;
@@ -4407,6 +4518,16 @@ class Controller extends ChangeNotifier {
 
   void setUpdateChannel(UpdateChannel channel) {
     _updateChannel = channel;
+  }
+
+  void setBandwidthCapsMBps({
+    required int transferRateLimitMBps,
+    required int globalRateLimitMBps,
+  }) {
+    final transferMBps = transferRateLimitMBps.clamp(1, 5000);
+    final globalMBps = max(globalRateLimitMBps.clamp(1, 5000), transferMBps);
+    _transferRateLimitBytesPerSecond = transferMBps * 1024 * 1024;
+    _globalRateLimitBytesPerSecond = globalMBps * 1024 * 1024;
   }
 
   Map<String, int> get networkDiagnostics =>
@@ -6404,7 +6525,12 @@ class Controller extends ChangeNotifier {
             await _uploadRateLimiter.consume(
               peerKey,
               chunk.length,
-              _perPeerUploadRateLimitBytesPerSecond,
+              _transferRateLimitBytesPerSecond,
+            );
+            await _globalBandwidthLimiter.consume(
+              'global',
+              chunk.length,
+              _globalRateLimitBytesPerSecond,
             );
             s.add(chunk);
             _addTransferProgress(transferId, chunk.length);
@@ -6560,7 +6686,12 @@ class Controller extends ChangeNotifier {
             await _downloadRateLimiter.consume(
               peer.id,
               n,
-              _perPeerDownloadRateLimitBytesPerSecond,
+              _transferRateLimitBytesPerSecond,
+            );
+            await _globalBandwidthLimiter.consume(
+              'global',
+              n,
+              _globalRateLimitBytesPerSecond,
             );
             sink.add(payload);
             hashConverter.add(payload);
@@ -6579,7 +6710,12 @@ class Controller extends ChangeNotifier {
             await _downloadRateLimiter.consume(
               peer.id,
               n,
-              _perPeerDownloadRateLimitBytesPerSecond,
+              _transferRateLimitBytesPerSecond,
+            );
+            await _globalBandwidthLimiter.consume(
+              'global',
+              n,
+              _globalRateLimitBytesPerSecond,
             );
             sink.add(payload);
             hashConverter.add(payload);
@@ -7116,6 +7252,8 @@ class AppSettings {
     this.sharedRoomKey = '',
     this.peerAllowlist = '',
     this.peerBlocklist = '',
+    this.transferRateLimitMBps = _defaultTransferRateLimitMBps,
+    this.globalRateLimitMBps = _defaultGlobalRateLimitMBps,
     this.autoUpdateChecks = false,
     this.updateChannel = UpdateChannel.stable,
     this.duplicateHandlingMode = DuplicateHandlingMode.rename,
@@ -7131,6 +7269,8 @@ class AppSettings {
   final String sharedRoomKey;
   final String peerAllowlist;
   final String peerBlocklist;
+  final int transferRateLimitMBps;
+  final int globalRateLimitMBps;
   final bool autoUpdateChecks;
   final UpdateChannel updateChannel;
   final DuplicateHandlingMode duplicateHandlingMode;
@@ -7146,6 +7286,8 @@ class AppSettings {
     'sharedRoomKey': sharedRoomKey,
     'peerAllowlist': peerAllowlist,
     'peerBlocklist': peerBlocklist,
+    'transferRateLimitMBps': transferRateLimitMBps,
+    'globalRateLimitMBps': globalRateLimitMBps,
     'autoUpdateChecks': autoUpdateChecks,
     'updateChannel': updateChannelToString(updateChannel),
     'duplicateHandlingMode': duplicateHandlingModeToString(
@@ -7165,6 +7307,14 @@ class AppSettings {
       sharedRoomKey: (json['sharedRoomKey'] as String? ?? '').trim(),
       peerAllowlist: (json['peerAllowlist'] as String? ?? ''),
       peerBlocklist: (json['peerBlocklist'] as String? ?? ''),
+      transferRateLimitMBps: _clampRateLimitMBps(
+        json['transferRateLimitMBps'],
+        _defaultTransferRateLimitMBps,
+      ),
+      globalRateLimitMBps: _clampRateLimitMBps(
+        json['globalRateLimitMBps'],
+        _defaultGlobalRateLimitMBps,
+      ),
       autoUpdateChecks: json['autoUpdateChecks'] == true,
       updateChannel: updateChannelFromString(json['updateChannel'] as String?),
       duplicateHandlingMode: duplicateHandlingModeFromString(
