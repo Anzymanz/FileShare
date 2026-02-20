@@ -142,43 +142,61 @@ void main() {
     expect(byDate.first.name, 'b.txt');
   });
 
-  test('partitionPinnedItems splits pinned and non-pinned while preserving order', () {
-    final a = _item(
-      ownerId: 'local',
-      owner: 'This PC',
-      id: '1',
-      name: 'a.txt',
-      size: 1,
-      local: true,
-    );
-    final b = _item(
-      ownerId: 'peer',
-      owner: 'Peer',
-      id: '2',
-      name: 'b.txt',
-      size: 2,
-      local: false,
-    );
-    final c = _item(
-      ownerId: 'peer',
-      owner: 'Peer',
-      id: '3',
-      name: 'c.txt',
-      size: 3,
-      local: false,
-    );
-    final split = partitionPinnedItems(
-      items: [a, b, c],
-      favoriteKeys: {b.key},
-    );
-    expect(split.pinned.map((e) => e.name).toList(), ['b.txt']);
-    expect(split.others.map((e) => e.name).toList(), ['a.txt', 'c.txt']);
-  });
+  test(
+    'partitionPinnedItems splits pinned and non-pinned while preserving order',
+    () {
+      final a = _item(
+        ownerId: 'local',
+        owner: 'This PC',
+        id: '1',
+        name: 'a.txt',
+        size: 1,
+        local: true,
+      );
+      final b = _item(
+        ownerId: 'peer',
+        owner: 'Peer',
+        id: '2',
+        name: 'b.txt',
+        size: 2,
+        local: false,
+      );
+      final c = _item(
+        ownerId: 'peer',
+        owner: 'Peer',
+        id: '3',
+        name: 'c.txt',
+        size: 3,
+        local: false,
+      );
+      final split = partitionPinnedItems(
+        items: [a, b, c],
+        favoriteKeys: {b.key},
+      );
+      expect(split.pinned.map((e) => e.name).toList(), ['b.txt']);
+      expect(split.others.map((e) => e.name).toList(), ['a.txt', 'c.txt']);
+    },
+  );
 
   test('buildClipboardShareName returns stable timestamped txt filename', () {
-    final name = buildClipboardShareName(
-      DateTime(2026, 2, 20, 15, 4, 9),
-    );
+    final name = buildClipboardShareName(DateTime(2026, 2, 20, 15, 4, 9));
     expect(name, 'Clipboard_20260220_150409.txt');
+  });
+
+  test('parseTrustListInput normalizes and de-duplicates entries', () {
+    final parsed = parseTrustListInput(
+      ' 192.168.0.10 ; PEER-ABC \n192.168.0.10,peer-abc  ',
+    );
+    expect(parsed, {'192.168.0.10', 'peer-abc'});
+    expect(trustListToText(parsed), '192.168.0.10\npeer-abc');
+  });
+
+  test('buildTrustCandidateKeys emits id/ip/ip:port variants', () {
+    final keys = buildTrustCandidateKeys(
+      peerId: 'PEER-XYZ',
+      address: '192.168.0.20',
+      port: 40406,
+    );
+    expect(keys, {'peer-xyz', '192.168.0.20', '192.168.0.20:40406'});
   });
 }

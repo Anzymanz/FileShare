@@ -32,7 +32,8 @@ const String _allReleasesApiUrl =
     'https://api.github.com/repos/Anzymanz/FileShare/releases';
 const String _latestReleasePageUrl =
     'https://github.com/Anzymanz/FileShare/releases/latest';
-const String _windowsRunKey = r'HKCU\Software\Microsoft\Windows\CurrentVersion\Run';
+const String _windowsRunKey =
+    r'HKCU\Software\Microsoft\Windows\CurrentVersion\Run';
 const String _windowsRunValueName = 'FileShare';
 const String _simLatencyEnv = 'FILESHARE_SIM_LATENCY_MS';
 const String _simDropEnv = 'FILESHARE_SIM_DROP_PERCENT';
@@ -264,14 +265,20 @@ List<String> buildNetworkDiagnosticsHints({
   if ((diagnostics['udp_auth_drop'] ?? 0) > 0 ||
       (diagnostics['tcp_auth_drop'] ?? 0) > 0) {
     if (roomKeyEnabled) {
-      hints.add('Auth drops detected. Confirm both peers use the same room key.');
+      hints.add(
+        'Auth drops detected. Confirm both peers use the same room key.',
+      );
     } else {
-      hints.add('Auth drops detected. If unexpected, clear and re-enter room keys.');
+      hints.add(
+        'Auth drops detected. If unexpected, clear and re-enter room keys.',
+      );
     }
   }
   if ((diagnostics['udp_protocol_mismatch'] ?? 0) > 0 ||
       (diagnostics['tcp_protocol_mismatch'] ?? 0) > 0) {
-    hints.add('Protocol mismatch traffic detected. Upgrade/downgrade peer app.');
+    hints.add(
+      'Protocol mismatch traffic detected. Upgrade/downgrade peer app.',
+    );
   }
   if ((diagnostics['udp_rate_limited'] ?? 0) > 0 ||
       (diagnostics['tcp_req_rate_limited'] ?? 0) > 0) {
@@ -328,15 +335,7 @@ bool _matchesItemTypeFilter(ShareItem item, ItemTypeFilter filter) {
     '.wmv',
     '.webm',
   };
-  const archiveExts = {
-    '.zip',
-    '.rar',
-    '.7z',
-    '.tar',
-    '.gz',
-    '.bz2',
-    '.xz',
-  };
+  const archiveExts = {'.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz'};
   final isImage = imageExts.contains(ext);
   final isDocument = docExts.contains(ext);
   final isMedia = mediaExts.contains(ext);
@@ -366,20 +365,22 @@ List<ShareItem> computeVisibleItems({
   required Map<String, DateTime> firstSeenByKey,
 }) {
   final needle = query.trim().toLowerCase();
-  final filtered = items.where((item) {
-    if (sourceFilter == ItemSourceFilter.local && !item.local) return false;
-    if (sourceFilter == ItemSourceFilter.remote && item.local) return false;
-    if (!_matchesItemTypeFilter(item, typeFilter)) return false;
-    if (needle.isEmpty) return true;
-    final name = item.name.toLowerCase();
-    final rel = item.rel.toLowerCase();
-    final owner = item.owner.toLowerCase();
-    final ext = p.extension(item.name).toLowerCase();
-    return name.contains(needle) ||
-        rel.contains(needle) ||
-        owner.contains(needle) ||
-        ext.contains(needle);
-  }).toList(growable: false);
+  final filtered = items
+      .where((item) {
+        if (sourceFilter == ItemSourceFilter.local && !item.local) return false;
+        if (sourceFilter == ItemSourceFilter.remote && item.local) return false;
+        if (!_matchesItemTypeFilter(item, typeFilter)) return false;
+        if (needle.isEmpty) return true;
+        final name = item.name.toLowerCase();
+        final rel = item.rel.toLowerCase();
+        final owner = item.owner.toLowerCase();
+        final ext = p.extension(item.name).toLowerCase();
+        return name.contains(needle) ||
+            rel.contains(needle) ||
+            owner.contains(needle) ||
+            ext.contains(needle);
+      })
+      .toList(growable: false);
 
   int compareName(ShareItem a, ShareItem b) {
     final byName = a.name.toLowerCase().compareTo(b.name.toLowerCase());
@@ -468,6 +469,54 @@ List<String> buildSubnetSweepTargets(
   return out;
 }
 
+String _normalizeTrustKey(String raw) => raw.trim().toLowerCase();
+
+Set<String> parseTrustListInput(String raw) {
+  final out = <String>{};
+  final pieces = raw.split(RegExp(r'[\s,;]+'));
+  for (final piece in pieces) {
+    final token = _normalizeTrustKey(piece);
+    if (token.isEmpty) continue;
+    if (token.length > 128) continue;
+    out.add(token);
+  }
+  return out;
+}
+
+String trustListToText(Set<String> values) {
+  final sorted = values.toList()..sort();
+  return sorted.join('\n');
+}
+
+Set<String> buildTrustCandidateKeys({
+  String? peerId,
+  String? address,
+  int? port,
+}) {
+  final out = <String>{};
+  final normalizedPeerId = peerId == null ? '' : _normalizeTrustKey(peerId);
+  if (normalizedPeerId.isNotEmpty) {
+    out.add(normalizedPeerId);
+  }
+  final normalizedAddress = address == null ? '' : _normalizeTrustKey(address);
+  if (normalizedAddress.isNotEmpty) {
+    out.add(normalizedAddress);
+    if (port != null && port > 0 && port <= 65535) {
+      out.add('$normalizedAddress:$port');
+    }
+  }
+  return out;
+}
+
+bool _stringSetEquals(Set<String> a, Set<String> b) {
+  if (identical(a, b)) return true;
+  if (a.length != b.length) return false;
+  for (final value in a) {
+    if (!b.contains(value)) return false;
+  }
+  return true;
+}
+
 bool _isValidStartupExecutable(String executablePath) {
   final fileName = p.basename(executablePath).toLowerCase();
   return fileName == 'fileshare.exe';
@@ -497,30 +546,33 @@ Future<void> main(List<String> args) async {
     return true;
   };
 
-  await runZonedGuarded(() async {
-    await windowManager.ensureInitialized();
-    final savedWindowState = await _loadWindowState();
-    final savedAppSettings = await _loadAppSettings();
+  await runZonedGuarded(
+    () async {
+      await windowManager.ensureInitialized();
+      final savedWindowState = await _loadWindowState();
+      final savedAppSettings = await _loadAppSettings();
 
-    await windowManager.waitUntilReadyToShow(
-      const WindowOptions(
-        minimumSize: _minWindowSize,
-        titleBarStyle: TitleBarStyle.hidden,
-        windowButtonVisibility: false,
-      ),
-    );
+      await windowManager.waitUntilReadyToShow(
+        const WindowOptions(
+          minimumSize: _minWindowSize,
+          titleBarStyle: TitleBarStyle.hidden,
+          windowButtonVisibility: false,
+        ),
+      );
 
-    runApp(
-      MyApp(
-        initialSettings: savedAppSettings,
-        startInTrayRequested: startInTrayRequested,
-      ),
-    );
-    _diagnostics.info('Application started');
-    unawaited(_restoreWindow(savedWindowState));
-  }, (error, stack) {
-    _diagnostics.captureUnhandledError('zone', error, stack);
-  });
+      runApp(
+        MyApp(
+          initialSettings: savedAppSettings,
+          startInTrayRequested: startInTrayRequested,
+        ),
+      );
+      _diagnostics.info('Application started');
+      unawaited(_restoreWindow(savedWindowState));
+    },
+    (error, stack) {
+      _diagnostics.captureUnhandledError('zone', error, stack);
+    },
+  );
 }
 
 Future<void> _restoreWindow(_WindowState? saved) async {
@@ -567,6 +619,8 @@ class _MyAppState extends State<MyApp> {
   late bool startWithWindows;
   late bool startInTrayOnLaunch;
   late String sharedRoomKey;
+  late String peerAllowlist;
+  late String peerBlocklist;
   late bool autoUpdateChecks;
   late UpdateChannel updateChannel;
 
@@ -583,6 +637,8 @@ class _MyAppState extends State<MyApp> {
     startWithWindows = widget.initialSettings.startWithWindows;
     startInTrayOnLaunch = widget.initialSettings.startInTrayOnLaunch;
     sharedRoomKey = widget.initialSettings.sharedRoomKey;
+    peerAllowlist = widget.initialSettings.peerAllowlist;
+    peerBlocklist = widget.initialSettings.peerBlocklist;
     autoUpdateChecks = widget.initialSettings.autoUpdateChecks;
     updateChannel = widget.initialSettings.updateChannel;
   }
@@ -597,6 +653,8 @@ class _MyAppState extends State<MyApp> {
         startWithWindows: startWithWindows,
         startInTrayOnLaunch: startInTrayOnLaunch,
         sharedRoomKey: sharedRoomKey,
+        peerAllowlist: peerAllowlist,
+        peerBlocklist: peerBlocklist,
         autoUpdateChecks: autoUpdateChecks,
         updateChannel: updateChannel,
       ),
@@ -634,6 +692,8 @@ class _MyAppState extends State<MyApp> {
         initialStartInTrayOnLaunch: startInTrayOnLaunch,
         startInTrayRequested: widget.startInTrayRequested,
         initialSharedRoomKey: sharedRoomKey,
+        initialPeerAllowlist: peerAllowlist,
+        initialPeerBlocklist: peerBlocklist,
         initialAutoUpdateChecks: autoUpdateChecks,
         initialUpdateChannel: updateChannel,
         onToggleTheme: () {
@@ -664,6 +724,14 @@ class _MyAppState extends State<MyApp> {
           setState(() => sharedRoomKey = value);
           unawaited(_persistSettings());
         },
+        onPeerAllowlistChanged: (value) {
+          setState(() => peerAllowlist = value);
+          unawaited(_persistSettings());
+        },
+        onPeerBlocklistChanged: (value) {
+          setState(() => peerBlocklist = value);
+          unawaited(_persistSettings());
+        },
         onAutoUpdateChecksChanged: (value) {
           setState(() => autoUpdateChecks = value);
           unawaited(_persistSettings());
@@ -688,6 +756,8 @@ class Home extends StatefulWidget {
     required this.initialStartInTrayOnLaunch,
     required this.startInTrayRequested,
     required this.initialSharedRoomKey,
+    required this.initialPeerAllowlist,
+    required this.initialPeerBlocklist,
     required this.initialAutoUpdateChecks,
     required this.initialUpdateChannel,
     required this.onToggleTheme,
@@ -697,6 +767,8 @@ class Home extends StatefulWidget {
     required this.onStartWithWindowsChanged,
     required this.onStartInTrayOnLaunchChanged,
     required this.onSharedRoomKeyChanged,
+    required this.onPeerAllowlistChanged,
+    required this.onPeerBlocklistChanged,
     required this.onAutoUpdateChecksChanged,
     required this.onUpdateChannelChanged,
   });
@@ -709,6 +781,8 @@ class Home extends StatefulWidget {
   final bool initialStartInTrayOnLaunch;
   final bool startInTrayRequested;
   final String initialSharedRoomKey;
+  final String initialPeerAllowlist;
+  final String initialPeerBlocklist;
   final bool initialAutoUpdateChecks;
   final UpdateChannel initialUpdateChannel;
   final VoidCallback onToggleTheme;
@@ -718,6 +792,8 @@ class Home extends StatefulWidget {
   final ValueChanged<bool> onStartWithWindowsChanged;
   final ValueChanged<bool> onStartInTrayOnLaunchChanged;
   final ValueChanged<String> onSharedRoomKeyChanged;
+  final ValueChanged<String> onPeerAllowlistChanged;
+  final ValueChanged<String> onPeerBlocklistChanged;
   final ValueChanged<bool> onAutoUpdateChecksChanged;
   final ValueChanged<UpdateChannel> onUpdateChannelChanged;
 
@@ -742,6 +818,8 @@ class _HomeState extends State<Home>
   bool _startWithWindows = false;
   bool _startInTrayOnLaunch = false;
   String _sharedRoomKey = '';
+  String _peerAllowlist = '';
+  String _peerBlocklist = '';
   bool _autoUpdateChecks = false;
   UpdateChannel _updateChannel = UpdateChannel.stable;
   ItemSourceFilter _sourceFilter = ItemSourceFilter.all;
@@ -769,10 +847,16 @@ class _HomeState extends State<Home>
     _startInTrayOnLaunch = widget.initialStartInTrayOnLaunch;
     _soundOnNudge = widget.initialSoundOnNudge;
     _sharedRoomKey = widget.initialSharedRoomKey;
+    _peerAllowlist = widget.initialPeerAllowlist;
+    _peerBlocklist = widget.initialPeerBlocklist;
     _autoUpdateChecks = widget.initialAutoUpdateChecks;
     _updateChannel = widget.initialUpdateChannel;
     _searchController = TextEditingController();
     c.setSharedRoomKey(_sharedRoomKey);
+    c.setTrustLists(
+      allowlist: parseTrustListInput(_peerAllowlist),
+      blocklist: parseTrustListInput(_peerBlocklist),
+    );
     c.setAutoUpdateChecks(_autoUpdateChecks);
     c.setUpdateChannel(_updateChannel);
     _nudgeAudioPlayer = AudioPlayer()..setReleaseMode(ReleaseMode.stop);
@@ -963,14 +1047,14 @@ class _HomeState extends State<Home>
       final name = buildClipboardShareName(DateTime.now());
       await c.addClipboardText(text, fileName: name);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Shared clipboard text as $name')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Shared clipboard text as $name')));
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Clipboard share failed: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Clipboard share failed: $e')));
     }
   }
 
@@ -981,7 +1065,10 @@ class _HomeState extends State<Home>
   ) {
     final rawRel = item.rel.replaceAll('\\', '/');
     var rel = p.normalize(rawRel);
-    if (rel.isEmpty || rel == '.' || rel.startsWith('..') || p.isAbsolute(rel)) {
+    if (rel.isEmpty ||
+        rel == '.' ||
+        rel.startsWith('..') ||
+        p.isAbsolute(rel)) {
       rel = _safeFileName(p.basename(item.rel));
     } else {
       final parts = rel
@@ -1007,7 +1094,8 @@ class _HomeState extends State<Home>
         ? unique
         : unique.substring(0, unique.length - ext.length);
     var counter = 2;
-    while (reserved.contains(unique.toLowerCase()) || File(unique).existsSync()) {
+    while (reserved.contains(unique.toLowerCase()) ||
+        File(unique).existsSync()) {
       unique = '$stem ($counter)$ext';
       counter++;
     }
@@ -1058,13 +1146,18 @@ class _HomeState extends State<Home>
       if (canceled > 0) '$canceled canceled',
     ];
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Download all from $ownerName: ${parts.join(', ')}')),
+      SnackBar(
+        content: Text('Download all from $ownerName: ${parts.join(', ')}'),
+      ),
     );
   }
 
   Future<void> _copyDirectory(Directory source, Directory target) async {
     await target.create(recursive: true);
-    await for (final entity in source.list(recursive: true, followLinks: false)) {
+    await for (final entity in source.list(
+      recursive: true,
+      followLinks: false,
+    )) {
       final relativePath = p.relative(entity.path, from: source.path);
       final destinationPath = p.join(target.path, relativePath);
       if (entity is Directory) {
@@ -1085,7 +1178,9 @@ class _HomeState extends State<Home>
       return 'Export canceled';
     }
     final stamp = DateTime.now().toIso8601String().replaceAll(':', '-');
-    final bundle = Directory(p.join(targetRoot, 'FileShare-Diagnostics-$stamp'));
+    final bundle = Directory(
+      p.join(targetRoot, 'FileShare-Diagnostics-$stamp'),
+    );
     await bundle.create(recursive: true);
     final appDataDir = await _appDataDir();
 
@@ -1577,7 +1672,8 @@ class _HomeState extends State<Home>
                                     layoutMode: _layoutMode,
                                     onToggleLayoutMode: () {
                                       setState(() {
-                                        _layoutMode = _layoutMode == ItemLayoutMode.grid
+                                        _layoutMode =
+                                            _layoutMode == ItemLayoutMode.grid
                                             ? ItemLayoutMode.list
                                             : ItemLayoutMode.grid;
                                       });
@@ -1595,9 +1691,9 @@ class _HomeState extends State<Home>
                                         ? Center(
                                             child: Text(
                                               'No items match current filters.',
-                                              style: Theme.of(context)
-                                                  .textTheme
-                                                  .titleSmall,
+                                              style: Theme.of(
+                                                context,
+                                              ).textTheme.titleSmall,
                                             ),
                                           )
                                         : _ExplorerGrid(
@@ -1661,16 +1757,20 @@ class _HomeState extends State<Home>
       ..sort((a, b) => a.name.compareTo(b.name));
     final incompatible = c.incompatiblePeers.entries.toList()
       ..sort((a, b) => a.key.compareTo(b.key));
-    final diagnostics = c.networkDiagnostics.entries
-        .where((e) => e.value > 0)
-        .toList(growable: false)
-      ..sort((a, b) => a.key.compareTo(b.key));
+    final diagnostics =
+        c.networkDiagnostics.entries
+            .where((e) => e.value > 0)
+            .toList(growable: false)
+          ..sort((a, b) => a.key.compareTo(b.key));
     final localIpSummary = c.localIps.isEmpty
         ? 'Unavailable'
         : c.localIps.join(', ');
     final probeController = TextEditingController();
     final keyController = TextEditingController(text: _sharedRoomKey);
+    final allowlistController = TextEditingController(text: _peerAllowlist);
+    final blocklistController = TextEditingController(text: _peerBlocklist);
     String? probeStatus;
+    String? trustStatus;
     bool sendingProbe = false;
     String? connectStatus;
     String? sweepStatus;
@@ -1682,8 +1782,9 @@ class _HomeState extends State<Home>
     String? exportStatus;
     bool exportingDiagnostics = false;
     bool profilingEnabled = c.latencyProfilingEnabled;
-    final latencySamples = c.peerFirstSyncLatency.entries.toList(growable: false)
-      ..sort((a, b) => a.key.compareTo(b.key));
+    final latencySamples = c.peerFirstSyncLatency.entries.toList(
+      growable: false,
+    )..sort((a, b) => a.key.compareTo(b.key));
     await showDialog<void>(
       context: context,
       builder: (_) => StatefulBuilder(
@@ -1723,6 +1824,60 @@ class _HomeState extends State<Home>
                       widget.onSharedRoomKeyChanged(normalized);
                     },
                   ),
+                  const SizedBox(height: 8),
+                  const Text('Peer Trust (optional)'),
+                  const SizedBox(height: 6),
+                  TextField(
+                    controller: allowlistController,
+                    minLines: 2,
+                    maxLines: 4,
+                    decoration: const InputDecoration(
+                      hintText: 'Allowlist entries (IP, IP:port, or peer ID)',
+                      isDense: true,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  TextField(
+                    controller: blocklistController,
+                    minLines: 2,
+                    maxLines: 4,
+                    decoration: const InputDecoration(
+                      hintText: 'Blocklist entries (IP, IP:port, or peer ID)',
+                      isDense: true,
+                    ),
+                  ),
+                  Row(
+                    children: [
+                      const Spacer(),
+                      TextButton(
+                        onPressed: () {
+                          final allow = parseTrustListInput(
+                            allowlistController.text,
+                          );
+                          final block = parseTrustListInput(
+                            blocklistController.text,
+                          );
+                          allow.removeWhere(block.contains);
+                          final allowText = trustListToText(allow);
+                          final blockText = trustListToText(block);
+                          c.setTrustLists(allowlist: allow, blocklist: block);
+                          _peerAllowlist = allowText;
+                          _peerBlocklist = blockText;
+                          widget.onPeerAllowlistChanged(allowText);
+                          widget.onPeerBlocklistChanged(blockText);
+                          setDialogState(
+                            () => trustStatus =
+                                'Trust policy saved (allow: ${allow.length}, block: ${block.length})',
+                          );
+                        },
+                        child: const Text('Apply Trust Policy'),
+                      ),
+                    ],
+                  ),
+                  if (trustStatus != null) ...[
+                    const SizedBox(height: 4),
+                    Text(trustStatus!),
+                  ],
                   SwitchListTile.adaptive(
                     dense: true,
                     contentPadding: EdgeInsets.zero,
@@ -2034,9 +2189,7 @@ class _HomeState extends State<Home>
                     const SizedBox(height: 8),
                     const Text('Latency Samples'),
                     for (final entry in latencySamples)
-                      Text(
-                        '- ${entry.key}: ${entry.value.inMilliseconds} ms',
-                      ),
+                      Text('- ${entry.key}: ${entry.value.inMilliseconds} ms'),
                   ],
                 ],
               ),
@@ -2052,6 +2205,8 @@ class _HomeState extends State<Home>
       ),
     );
     keyController.dispose();
+    allowlistController.dispose();
+    blocklistController.dispose();
     probeController.dispose();
   }
 
@@ -2619,9 +2774,7 @@ class _ToolbarDropdown<T> extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 8),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(
-          color: Theme.of(context).colorScheme.outlineVariant,
-        ),
+        border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
       ),
       child: DropdownButtonHideUnderline(
         child: DropdownButton<T>(
@@ -2751,7 +2904,8 @@ class _ExplorerGrid extends StatelessWidget {
                     _buildSection(
                       context: context,
                       groupIndex: split.pinned.isEmpty ? i : i + 1,
-                      totalGroups: orderedGroups.length + (split.pinned.isEmpty ? 0 : 1),
+                      totalGroups:
+                          orderedGroups.length + (split.pinned.isEmpty ? 0 : 1),
                       ownerLabel: orderedGroups[i].ownerName,
                       ownerId: orderedGroups[i].ownerId,
                       sectionItems: orderedGroups[i].items,
@@ -2781,9 +2935,7 @@ class _ExplorerGrid extends StatelessWidget {
   }) {
     final hasRemoteItems = sectionItems.any((item) => !item.local);
     return Padding(
-      padding: EdgeInsets.only(
-        bottom: groupIndex == totalGroups - 1 ? 0 : 12,
-      ),
+      padding: EdgeInsets.only(bottom: groupIndex == totalGroups - 1 ? 0 : 12),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -2932,6 +3084,7 @@ class _IconTileState extends State<IconTile> {
         r.session.dragging.removeListener(upd);
       }
     }
+
     try {
       r.session.dragging.addListener(upd);
       upd();
@@ -2949,7 +3102,8 @@ class _IconTileState extends State<IconTile> {
   }
 
   Future<void> _showContextMenu(TapDownDetails details) async {
-    final overlay = Overlay.of(context).context.findRenderObject() as RenderBox?;
+    final overlay =
+        Overlay.of(context).context.findRenderObject() as RenderBox?;
     if (overlay == null) return;
     final selected = await showMenu<int>(
       context: context,
@@ -2973,10 +3127,7 @@ class _IconTileState extends State<IconTile> {
             child: Text('Download As...'),
           ),
         if (widget.onRemove != null)
-          const PopupMenuItem<int>(
-            value: _menuRemove,
-            child: Text('Remove'),
-          ),
+          const PopupMenuItem<int>(value: _menuRemove, child: Text('Remove')),
       ],
     );
     if (!mounted || selected == null) return;
@@ -3026,7 +3177,9 @@ class _IconTileState extends State<IconTile> {
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
           decoration: BoxDecoration(
-            color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.6),
+            color: theme.colorScheme.surfaceContainerHighest.withValues(
+              alpha: 0.6,
+            ),
             borderRadius: BorderRadius.circular(999),
           ),
           child: Text(
@@ -3129,7 +3282,9 @@ class _IconTileState extends State<IconTile> {
                   ? Container(
                       padding: const EdgeInsets.fromLTRB(8, 6, 6, 6),
                       decoration: BoxDecoration(
-                        color: theme.colorScheme.surface.withValues(alpha: 0.68),
+                        color: theme.colorScheme.surface.withValues(
+                          alpha: 0.68,
+                        ),
                         borderRadius: BorderRadius.circular(10),
                         border: Border.all(
                           color: theme.colorScheme.outlineVariant.withValues(
@@ -3546,6 +3701,8 @@ class Controller extends ChangeNotifier {
   int _activeInboundClients = 0;
   DateTime _lastTransferNotify = DateTime.fromMillisecondsSinceEpoch(0);
   String _sharedRoomKey = '';
+  final Set<String> _peerAllowlist = <String>{};
+  final Set<String> _peerBlocklist = <String>{};
   bool _autoUpdateChecks = false;
   UpdateChannel _updateChannel = UpdateChannel.stable;
   DiscoveryProfile _discoveryProfile = DiscoveryProfile.balanced;
@@ -3556,17 +3713,101 @@ class Controller extends ChangeNotifier {
     0,
     int.tryParse(Platform.environment[_simLatencyEnv] ?? '') ?? 0,
   );
-  final int _simulatedDropPercent = (int.tryParse(
-            Platform.environment[_simDropEnv] ?? '',
-          ) ??
-          0)
-      .clamp(0, 95);
+  final int _simulatedDropPercent =
+      (int.tryParse(Platform.environment[_simDropEnv] ?? '') ?? 0).clamp(0, 95);
   final Random _simRandom = Random();
 
   String get sharedRoomKey => _sharedRoomKey;
+  Set<String> get peerAllowlist => Set<String>.unmodifiable(_peerAllowlist);
+  Set<String> get peerBlocklist => Set<String>.unmodifiable(_peerBlocklist);
 
   void setSharedRoomKey(String key) {
     _sharedRoomKey = key.trim();
+  }
+
+  void setTrustLists({
+    required Set<String> allowlist,
+    required Set<String> blocklist,
+  }) {
+    Set<String> sanitize(Set<String> input) {
+      final out = <String>{};
+      for (final raw in input) {
+        final token = _normalizeTrustKey(raw);
+        if (token.isEmpty || token.length > 128) continue;
+        out.add(token);
+      }
+      return out;
+    }
+
+    final nextAllow = sanitize(allowlist);
+    final nextBlock = sanitize(blocklist);
+    nextAllow.removeWhere(nextBlock.contains);
+    if (_stringSetEquals(nextAllow, _peerAllowlist) &&
+        _stringSetEquals(nextBlock, _peerBlocklist)) {
+      return;
+    }
+    _peerAllowlist
+      ..clear()
+      ..addAll(nextAllow);
+    _peerBlocklist
+      ..clear()
+      ..addAll(nextBlock);
+    _dropUntrustedPeers();
+    _evaluateDiscoveryProfile(force: true);
+    _broadcast();
+    notifyListeners();
+  }
+
+  bool _isPeerTrusted({
+    String? peerId,
+    required String remoteAddress,
+    int? remotePort,
+    bool countDiagnostics = true,
+  }) {
+    final keys = buildTrustCandidateKeys(
+      peerId: peerId,
+      address: remoteAddress,
+      port: remotePort,
+    );
+    for (final key in keys) {
+      if (_peerBlocklist.contains(key)) {
+        if (countDiagnostics) _incDiagnostic('trust_block_drop');
+        return false;
+      }
+    }
+    if (_peerAllowlist.isEmpty) return true;
+    for (final key in keys) {
+      if (_peerAllowlist.contains(key)) {
+        return true;
+      }
+    }
+    if (countDiagnostics) _incDiagnostic('trust_allowlist_drop');
+    return false;
+  }
+
+  bool _dropUntrustedPeers() {
+    final removeIds = <String>[];
+    for (final entry in peers.entries) {
+      final peer = entry.value;
+      if (_isPeerTrusted(
+        peerId: peer.id,
+        remoteAddress: peer.addr.address,
+        remotePort: peer.port,
+        countDiagnostics: false,
+      )) {
+        continue;
+      }
+      removeIds.add(entry.key);
+    }
+    if (removeIds.isEmpty) return false;
+    for (final id in removeIds) {
+      peers.remove(id);
+      peerStatus.remove(id);
+      peerHealth.remove(id);
+      _peerFirstSeenAt.remove(id);
+      _peerFirstSyncLatency.remove(id);
+    }
+    return true;
   }
 
   void setAutoUpdateChecks(bool value) {
@@ -3711,7 +3952,10 @@ class Controller extends ChangeNotifier {
             ? _latestReleaseApiUrl
             : _allReleasesApiUrl;
         final req = await client.getUrl(Uri.parse(endpoint));
-        req.headers.set(HttpHeaders.acceptHeader, 'application/vnd.github+json');
+        req.headers.set(
+          HttpHeaders.acceptHeader,
+          'application/vnd.github+json',
+        );
         req.headers.set(HttpHeaders.userAgentHeader, 'FileShare');
         final resp = await req.close().timeout(const Duration(seconds: 6));
         if (resp.statusCode != 200) {
@@ -3947,7 +4191,10 @@ class Controller extends ChangeNotifier {
       final now = DateTime.now();
       final files = <FileSystemEntity>[];
       int totalBytes = 0;
-      await for (final entity in dragDir.list(recursive: true, followLinks: false)) {
+      await for (final entity in dragDir.list(
+        recursive: true,
+        followLinks: false,
+      )) {
         if (entity is! File) continue;
         final stat = await entity.stat();
         if (now.difference(stat.modified) > _dragCacheMaxAge) {
@@ -4011,17 +4258,25 @@ class Controller extends ChangeNotifier {
     }
     if (multicastEnabled) {
       if (!_shouldSimulateDrop('udp_out_nudge')) {
-      u.send(
-        payloadBytes,
-        InternetAddress(_discoveryMulticastGroup),
-        _discoveryPort,
-      );
+        u.send(
+          payloadBytes,
+          InternetAddress(_discoveryMulticastGroup),
+          _discoveryPort,
+        );
       }
     }
 
     // Broadcast can be asymmetric on some LAN setups; also nudge peers directly.
     final sent = <String>{};
     for (final p in peers.values) {
+      if (!_isPeerTrusted(
+        peerId: p.id,
+        remoteAddress: p.addr.address,
+        remotePort: p.port,
+        countDiagnostics: false,
+      )) {
+        continue;
+      }
       final ip = p.addr.address;
       if (!sent.add(ip)) continue;
       if (_shouldSimulateDrop('udp_out_nudge')) continue;
@@ -4036,8 +4291,12 @@ class Controller extends ChangeNotifier {
     final appDir = await _appDataDir();
     final clipDir = Directory(p.join(appDir.path, 'clipboard'));
     await clipDir.create(recursive: true);
-    final base = _safeFileName((fileName ?? buildClipboardShareName(DateTime.now())).trim());
-    final candidateBase = base.toLowerCase().endsWith('.txt') ? base : '$base.txt';
+    final base = _safeFileName(
+      (fileName ?? buildClipboardShareName(DateTime.now())).trim(),
+    );
+    final candidateBase = base.toLowerCase().endsWith('.txt')
+        ? base
+        : '$base.txt';
     var target = File(p.join(clipDir.path, candidateBase));
     var counter = 2;
     while (await target.exists()) {
@@ -4078,16 +4337,18 @@ class Controller extends ChangeNotifier {
     } catch (_) {
       return false;
     }
-    final payload = jsonEncode(_withAuth({
-      'tag': _tag,
-      'type': 'probe',
-      'protocolMajor': _protocolMajor,
-      'protocolMinor': _protocolMinor,
-      'id': deviceId,
-      'name': deviceName,
-      'port': listenPort,
-      'revision': revision,
-    }));
+    final payload = jsonEncode(
+      _withAuth({
+        'tag': _tag,
+        'type': 'probe',
+        'protocolMajor': _protocolMajor,
+        'protocolMinor': _protocolMinor,
+        'id': deviceId,
+        'name': deviceName,
+        'port': listenPort,
+        'revision': revision,
+      }),
+    );
     if (_shouldSimulateDrop('udp_out_probe')) return true;
     u.send(utf8.encode(payload), addr, port);
     return true;
@@ -4101,6 +4362,13 @@ class Controller extends ChangeNotifier {
     bool notify = true,
   }) {
     final id = manifest.id;
+    if (!_isPeerTrusted(
+      peerId: id,
+      remoteAddress: addr.address,
+      remotePort: port,
+    )) {
+      return;
+    }
     final name = manifest.name;
     final rev = manifest.revision;
     final list = manifest.items;
@@ -4141,6 +4409,14 @@ class Controller extends ChangeNotifier {
     int port, {
     Duration timeout = const Duration(milliseconds: 900),
   }) async {
+    if (!_isPeerTrusted(
+      peerId: null,
+      remoteAddress: addr.address,
+      remotePort: port,
+      countDiagnostics: false,
+    )) {
+      return false;
+    }
     try {
       if (_shouldSimulateDrop('tcp_out_sweep_probe')) return false;
       final s = await Socket.connect(addr, port, timeout: timeout);
@@ -4201,9 +4477,7 @@ class Controller extends ChangeNotifier {
       }
     }
 
-    await Future.wait(
-      List.generate(workers, (_) => worker()),
-    );
+    await Future.wait(List.generate(workers, (_) => worker()));
     if (found > 0) {
       notifyListeners();
     }
@@ -4229,6 +4503,14 @@ class Controller extends ChangeNotifier {
     } catch (_) {
       return 'Invalid IP';
     }
+    if (!_isPeerTrusted(
+      peerId: null,
+      remoteAddress: addr.address,
+      remotePort: port,
+      countDiagnostics: false,
+    )) {
+      return 'Blocked by trust policy';
+    }
     try {
       if (_shouldSimulateDrop('tcp_out_connect')) {
         return 'Simulated drop (tcp_out_connect)';
@@ -4253,11 +4535,15 @@ class Controller extends ChangeNotifier {
           return 'Version mismatch: local $_protocolMajor.x, peer ${e.remoteMajor ?? 'unknown'}.x';
         }
         if (manifest == null) return 'Bad response';
-        _applyManifestToPeer(
-          addr: addr,
-          port: port,
-          manifest: manifest,
-        );
+        if (!_isPeerTrusted(
+          peerId: manifest.id,
+          remoteAddress: addr.address,
+          remotePort: port,
+          countDiagnostics: false,
+        )) {
+          return 'Blocked by trust policy';
+        }
+        _applyManifestToPeer(addr: addr, port: port, manifest: manifest);
         return 'Connected: ${manifest.name} (${manifest.items.length} items)';
       } finally {
         await s.close();
@@ -4282,22 +4568,14 @@ class Controller extends ChangeNotifier {
       if (Platform.isWindows) {
         final dragPath = await _materializeWindowsDragPath(s);
         if (dragPath == null) return null;
-        item.add(
-          Formats.fileUri(
-            Uri.file(dragPath, windows: true),
-          ),
-        );
+        item.add(Formats.fileUri(Uri.file(dragPath, windows: true)));
         return item;
       }
 
       if (s.local) {
         final path = s.path;
         if (path == null || path.isEmpty) return null;
-        item.add(
-          Formats.fileUri(
-            Uri.file(path, windows: Platform.isWindows),
-          ),
-        );
+        item.add(Formats.fileUri(Uri.file(path, windows: Platform.isWindows)));
         return item;
       }
 
@@ -4337,7 +4615,9 @@ class Controller extends ChangeNotifier {
       final dragDir = Directory(p.join(appDir.path, 'drag_cache'));
       await dragDir.create(recursive: true);
       final safeName = _safeFileName(s.name);
-      final itemDir = Directory(p.join(dragDir.path, '${s.ownerId}_${s.itemId}'));
+      final itemDir = Directory(
+        p.join(dragDir.path, '${s.ownerId}_${s.itemId}'),
+      );
       await itemDir.create(recursive: true);
       final targetPath = p.join(itemDir.path, safeName);
       final target = File(targetPath);
@@ -4431,7 +4711,19 @@ class Controller extends ChangeNotifier {
 
   Future<void> refreshAll() async {
     final now = DateTime.now();
+    final droppedUntrusted = _dropUntrustedPeers();
+    if (droppedUntrusted) {
+      notifyListeners();
+    }
     for (final p in peers.values.toList(growable: false)) {
+      if (!_isPeerTrusted(
+        peerId: p.id,
+        remoteAddress: p.addr.address,
+        remotePort: p.port,
+        countDiagnostics: false,
+      )) {
+        continue;
+      }
       if (p.fetching) continue;
       if (!p.canFetchAt(now)) continue;
       if (now.difference(p.lastFetch) < _minFetchInterval) continue;
@@ -4443,11 +4735,27 @@ class Controller extends ChangeNotifier {
   Future<void> runHealthCheck() async {
     final peersSnapshot = peers.values.toList(growable: false);
     for (final peer in peersSnapshot) {
-      peerHealth[peer.id] = 'Checking...';
+      peerHealth[peer.id] =
+          _isPeerTrusted(
+            peerId: peer.id,
+            remoteAddress: peer.addr.address,
+            remotePort: peer.port,
+            countDiagnostics: false,
+          )
+          ? 'Checking...'
+          : 'Blocked by trust policy';
     }
     notifyListeners();
 
     for (final peer in peersSnapshot) {
+      if (!_isPeerTrusted(
+        peerId: peer.id,
+        remoteAddress: peer.addr.address,
+        remotePort: peer.port,
+        countDiagnostics: false,
+      )) {
+        continue;
+      }
       final result = await _pingPeer(peer);
       peerHealth[peer.id] = result;
       notifyListeners();
@@ -4588,6 +4896,14 @@ class Controller extends ChangeNotifier {
     }
     final sent = <String>{};
     for (final p in peers.values) {
+      if (!_isPeerTrusted(
+        peerId: p.id,
+        remoteAddress: p.addr.address,
+        remotePort: p.port,
+        countDiagnostics: false,
+      )) {
+        continue;
+      }
       final ip = p.addr.address;
       if (!sent.add(ip)) continue;
       _sendPresenceTo(p.addr);
@@ -4610,16 +4926,18 @@ class Controller extends ChangeNotifier {
   void _sendPresenceTo(InternetAddress addr) {
     final u = _udp;
     if (u == null) return;
-    final payload = jsonEncode(_withAuth({
-      'tag': _tag,
-      'type': 'presence',
-      'protocolMajor': _protocolMajor,
-      'protocolMinor': _protocolMinor,
-      'id': deviceId,
-      'name': deviceName,
-      'port': listenPort,
-      'revision': revision,
-    }));
+    final payload = jsonEncode(
+      _withAuth({
+        'tag': _tag,
+        'type': 'presence',
+        'protocolMajor': _protocolMajor,
+        'protocolMinor': _protocolMinor,
+        'id': deviceId,
+        'name': deviceName,
+        'port': listenPort,
+        'revision': revision,
+      }),
+    );
     if (_shouldSimulateDrop('udp_out_presence')) return;
     u.send(utf8.encode(payload), addr, _discoveryPort);
   }
@@ -4670,12 +4988,11 @@ class Controller extends ChangeNotifier {
       if (_shouldSimulateDrop('udp_inbound')) {
         continue;
       }
-      if (
-          !_udpRateLimiter.allow(
-            'udp:$remoteIp',
-            maxEvents: 350,
-            window: const Duration(seconds: 5),
-          )) {
+      if (!_udpRateLimiter.allow(
+        'udp:$remoteIp',
+        maxEvents: 350,
+        window: const Duration(seconds: 5),
+      )) {
         _incDiagnostic('udp_rate_limited');
         continue;
       }
@@ -4700,7 +5017,8 @@ class Controller extends ChangeNotifier {
           final id = _safeString(map['id'], maxChars: _maxPeerIdChars);
           final name = _safeString(map['name'], maxChars: _maxPeerNameChars);
           final port = _safeInt(map['port'], min: 1, max: 65535);
-          final key = id ?? '${name ?? g.address.address}:${port ?? _discoveryPort}';
+          final key =
+              id ?? '${name ?? g.address.address}:${port ?? _discoveryPort}';
           incompatiblePeers[key] =
               '${name ?? g.address.address} (${g.address.address}:${port ?? _discoveryPort}) '
               'uses protocol ${incomingMajor ?? 'unknown'}.x';
@@ -4708,20 +5026,25 @@ class Controller extends ChangeNotifier {
         }
         final type = _safeString(map['type'], maxChars: 24);
         if (type == null) continue;
+        final id = _safeString(map['id'], maxChars: _maxPeerIdChars);
+        final port = _safeInt(map['port'], min: 1, max: 65535);
+        if (!_isPeerTrusted(
+          peerId: id,
+          remoteAddress: g.address.address,
+          remotePort: port,
+        )) {
+          continue;
+        }
         if (type == 'nudge') {
-          final id = _safeString(map['id'], maxChars: _maxPeerIdChars);
           if (id != null) _applyNudgeFrom(id);
           continue;
         }
         if (type == 'probe') {
-          final id = _safeString(map['id'], maxChars: _maxPeerIdChars);
           if (id != null && id != deviceId) {
             _sendPresenceTo(g.address);
           }
         }
-        final id = _safeString(map['id'], maxChars: _maxPeerIdChars);
         final name = _safeString(map['name'], maxChars: _maxPeerNameChars);
-        final port = _safeInt(map['port'], min: 1, max: 65535);
         final rev = _safeInt(map['revision'], min: 0, max: 0x7fffffff) ?? 0;
         if (id == null || name == null || port == null || id == deviceId) {
           continue;
@@ -4782,12 +5105,19 @@ class Controller extends ChangeNotifier {
   }
 
   void _prunePeers() {
+    final droppedUntrusted = _dropUntrustedPeers();
     final now = DateTime.now();
     final stale = peers.values
         .where((e) => now.difference(e.lastGoodContact) > _peerPruneAfter)
         .map((e) => e.id)
         .toList();
-    if (stale.isEmpty) return;
+    if (stale.isEmpty) {
+      if (droppedUntrusted) {
+        _evaluateDiscoveryProfile(force: true);
+        notifyListeners();
+      }
+      return;
+    }
     for (final id in stale) {
       peers.remove(id);
       peerStatus.remove(id);
@@ -4799,6 +5129,15 @@ class Controller extends ChangeNotifier {
 
   Future<void> _fetchManifest(Peer p0, {bool force = false}) async {
     if (p0.fetching) return;
+    if (!_isPeerTrusted(
+      peerId: p0.id,
+      remoteAddress: p0.addr.address,
+      remotePort: p0.port,
+      countDiagnostics: false,
+    )) {
+      peerStatus[p0.id] = 'Blocked by trust policy';
+      return;
+    }
     if (!force && !p0.canFetchAt(DateTime.now())) return;
     p0.fetching = true;
     p0.lastFetch = DateTime.now();
@@ -4885,15 +5224,17 @@ class Controller extends ChangeNotifier {
 
   Future<void> _sendManifestRequest(Socket s) async {
     s.write(
-      jsonEncode(_withAuth({
-        'type': 'manifest',
-        'protocolMajor': _protocolMajor,
-        'protocolMinor': _protocolMinor,
-        'clientId': deviceId,
-        'clientName': deviceName,
-        'clientPort': listenPort,
-        'clientRevision': revision,
-      })),
+      jsonEncode(
+        _withAuth({
+          'type': 'manifest',
+          'protocolMajor': _protocolMajor,
+          'protocolMinor': _protocolMinor,
+          'clientId': deviceId,
+          'clientName': deviceName,
+          'clientPort': listenPort,
+          'clientRevision': revision,
+        }),
+      ),
     );
     s.write('\n');
     await s.flush();
@@ -4908,6 +5249,13 @@ class Controller extends ChangeNotifier {
     final port = _safeInt(req['clientPort'], min: 1, max: 65535);
     final rev = _safeInt(req['clientRevision'], min: 0, max: 0x7fffffff) ?? 0;
     if (id == null || name == null || port == null || id == deviceId) {
+      return;
+    }
+    if (!_isPeerTrusted(
+      peerId: id,
+      remoteAddress: remoteAddress.address,
+      remotePort: port,
+    )) {
       return;
     }
     _clearIncompatiblePeerHints(
@@ -5062,6 +5410,14 @@ class Controller extends ChangeNotifier {
   }
 
   Future<String> _pingPeer(Peer p0) async {
+    if (!_isPeerTrusted(
+      peerId: p0.id,
+      remoteAddress: p0.addr.address,
+      remotePort: p0.port,
+      countDiagnostics: false,
+    )) {
+      return 'Blocked by trust policy';
+    }
     try {
       if (_shouldSimulateDrop('tcp_out_ping')) {
         return 'Simulated drop (tcp_out_ping)';
@@ -5088,8 +5444,10 @@ class Controller extends ChangeNotifier {
           return 'Version mismatch: ${incomingMajor ?? 'unknown'}.x';
         }
         final count =
-            ((m['items'] as List<dynamic>? ?? const <dynamic>[]).length)
-                .clamp(0, _maxManifestItems);
+            ((m['items'] as List<dynamic>? ?? const <dynamic>[]).length).clamp(
+              0,
+              _maxManifestItems,
+            );
         return 'OK ($count items)';
       } finally {
         await s.close();
@@ -5150,6 +5508,29 @@ class Controller extends ChangeNotifier {
         await s.flush();
         return;
       }
+      final trustPeerId =
+          _safeString(req['clientId'], maxChars: _maxPeerIdChars) ??
+          _safeString(req['id'], maxChars: _maxPeerIdChars);
+      final trustPort =
+          _safeInt(req['clientPort'], min: 1, max: 65535) ??
+          _safeInt(req['port'], min: 1, max: 65535);
+      if (!_isPeerTrusted(
+        peerId: trustPeerId,
+        remoteAddress: remoteIp,
+        remotePort: trustPort,
+      )) {
+        s.write(
+          jsonEncode(
+            _withAuth({
+              'type': 'error',
+              'message': 'Peer blocked by trust policy',
+            }),
+          ),
+        );
+        s.write('\n');
+        await s.flush();
+        return;
+      }
       _learnPeerFromRequest(s.remoteAddress, req);
       final type = _safeString(req['type'], maxChars: 24);
       if (type == null) return;
@@ -5174,28 +5555,34 @@ class Controller extends ChangeNotifier {
         return;
       }
       if (type == 'manifest') {
-        final manifestItems = _local.values.take(_maxManifestItems).map((e) {
-          final iconBytes = e.iconBytes;
-          return {
-            'id': e.id,
-            'name': e.name,
-            'relativePath': e.rel,
-            'size': e.size,
-            'iconPngBase64': (iconBytes == null || iconBytes.length > _maxIconBytes)
-                ? null
-                : base64Encode(iconBytes),
-          };
-        }).toList(growable: false);
+        final manifestItems = _local.values
+            .take(_maxManifestItems)
+            .map((e) {
+              final iconBytes = e.iconBytes;
+              return {
+                'id': e.id,
+                'name': e.name,
+                'relativePath': e.rel,
+                'size': e.size,
+                'iconPngBase64':
+                    (iconBytes == null || iconBytes.length > _maxIconBytes)
+                    ? null
+                    : base64Encode(iconBytes),
+              };
+            })
+            .toList(growable: false);
         s.write(
-          jsonEncode(_withAuth({
-            'type': 'manifest',
-            'protocolMajor': _protocolMajor,
-            'protocolMinor': _protocolMinor,
-            'id': deviceId,
-            'name': deviceName,
-            'revision': revision,
-            'items': manifestItems,
-          })),
+          jsonEncode(
+            _withAuth({
+              'type': 'manifest',
+              'protocolMajor': _protocolMajor,
+              'protocolMinor': _protocolMinor,
+              'id': deviceId,
+              'name': deviceName,
+              'revision': revision,
+              'items': manifestItems,
+            }),
+          ),
         );
         s.write('\n');
         await s.flush();
@@ -5206,12 +5593,11 @@ class Controller extends ChangeNotifier {
         if (id == null) return;
         final peerKey =
             _safeString(req['clientId'], maxChars: _maxPeerIdChars) ?? remoteIp;
-        if (
-            !_acquirePeerSlot(
-              _activePeerUploads,
-              peerKey,
-              _maxConcurrentTransfersPerPeer,
-            )) {
+        if (!_acquirePeerSlot(
+          _activePeerUploads,
+          peerKey,
+          _maxConcurrentTransfersPerPeer,
+        )) {
           _incDiagnostic('upload_peer_slot_reject');
           s.write(
             jsonEncode(
@@ -5248,12 +5634,14 @@ class Controller extends ChangeNotifier {
           return;
         }
         s.write(
-          jsonEncode(_withAuth({
-            'type': 'file',
-            'name': item.name,
-            'relativePath': item.rel,
-            'size': item.size,
-          })),
+          jsonEncode(
+            _withAuth({
+              'type': 'file',
+              'name': item.name,
+              'relativePath': item.rel,
+              'size': item.size,
+            }),
+          ),
         );
         s.write('\n');
         await s.flush();
@@ -5338,11 +5726,19 @@ class Controller extends ChangeNotifier {
   Future<bool> _streamRemote(
     ShareItem it,
     EventSink sink,
-    bool Function() canceled,
-    {void Function(String transferId)? onTransferStart}
-  ) async {
+    bool Function() canceled, {
+    void Function(String transferId)? onTransferStart,
+  }) async {
     final peer = peers[it.peerId];
     if (peer == null) throw Exception('Peer not found');
+    if (!_isPeerTrusted(
+      peerId: peer.id,
+      remoteAddress: peer.addr.address,
+      remotePort: peer.port,
+      countDiagnostics: false,
+    )) {
+      throw Exception('Peer blocked by trust policy');
+    }
     if (_shouldSimulateDrop('tcp_out_download')) {
       throw Exception('Simulated drop (tcp_out_download)');
     }
@@ -5354,15 +5750,17 @@ class Controller extends ChangeNotifier {
     );
     try {
       s.write(
-        jsonEncode(_withAuth({
-          'type': 'download',
-          'protocolMajor': _protocolMajor,
-          'protocolMinor': _protocolMinor,
-          'clientId': deviceId,
-          'clientName': deviceName,
-          'clientPort': listenPort,
-          'id': it.itemId,
-        })),
+        jsonEncode(
+          _withAuth({
+            'type': 'download',
+            'protocolMajor': _protocolMajor,
+            'protocolMinor': _protocolMinor,
+            'clientId': deviceId,
+            'clientName': deviceName,
+            'clientPort': listenPort,
+            'id': it.itemId,
+          }),
+        ),
       );
       s.write('\n');
       await s.flush();
@@ -5379,12 +5777,11 @@ class Controller extends ChangeNotifier {
         totalBytes: totalBytes,
       );
       onTransferStart?.call(transferId);
-      if (
-          !_acquirePeerSlot(
-            _activePeerDownloads,
-            peer.id,
-            _maxConcurrentTransfersPerPeer,
-          )) {
+      if (!_acquirePeerSlot(
+        _activePeerDownloads,
+        peer.id,
+        _maxConcurrentTransfersPerPeer,
+      )) {
         _incDiagnostic('download_peer_slot_reject');
         _finishTransfer(
           transferId,
@@ -5397,7 +5794,9 @@ class Controller extends ChangeNotifier {
         var left = totalBytes;
         if (h.rem.isNotEmpty) {
           final n = min(left, h.rem.length);
-          if (n > 0 && !canceled() && !_canceledTransfers.contains(transferId)) {
+          if (n > 0 &&
+              !canceled() &&
+              !_canceledTransfers.contains(transferId)) {
             await _downloadRateLimiter.consume(
               peer.id,
               n,
@@ -5571,11 +5970,7 @@ class Controller extends ChangeNotifier {
   }) {
     if (m['type'] != 'manifest') return null;
     if (!_verifyAuth(m)) return null;
-    final incomingMajor = _safeInt(
-      m['protocolMajor'],
-      min: 0,
-      max: 0x7fffffff,
-    );
+    final incomingMajor = _safeInt(m['protocolMajor'], min: 0, max: 0x7fffffff);
     if (incomingMajor != _protocolMajor) {
       throw _ProtocolMismatchException(incomingMajor);
     }
@@ -5603,10 +5998,14 @@ class Controller extends ChangeNotifier {
         maxChars: _maxRelativePathChars,
       );
       final size = _safeInt(map['size'], min: 0, max: 0x7fffffff);
-      if (itemId == null || itemName == null || relativePath == null || size == null) {
+      if (itemId == null ||
+          itemName == null ||
+          relativePath == null ||
+          size == null) {
         continue;
       }
-      if (!_isValidRemoteFileName(itemName) || !_isValidRelativePath(relativePath)) {
+      if (!_isValidRemoteFileName(itemName) ||
+          !_isValidRelativePath(relativePath)) {
         _incDiagnostic('manifest_item_rejected');
         continue;
       }
@@ -5933,6 +6332,8 @@ class AppSettings {
     this.startWithWindows = false,
     this.startInTrayOnLaunch = false,
     this.sharedRoomKey = '',
+    this.peerAllowlist = '',
+    this.peerBlocklist = '',
     this.autoUpdateChecks = false,
     this.updateChannel = UpdateChannel.stable,
   });
@@ -5944,6 +6345,8 @@ class AppSettings {
   final bool startWithWindows;
   final bool startInTrayOnLaunch;
   final String sharedRoomKey;
+  final String peerAllowlist;
+  final String peerBlocklist;
   final bool autoUpdateChecks;
   final UpdateChannel updateChannel;
 
@@ -5955,6 +6358,8 @@ class AppSettings {
     'startWithWindows': startWithWindows,
     'startInTrayOnLaunch': startInTrayOnLaunch,
     'sharedRoomKey': sharedRoomKey,
+    'peerAllowlist': peerAllowlist,
+    'peerBlocklist': peerBlocklist,
     'autoUpdateChecks': autoUpdateChecks,
     'updateChannel': updateChannelToString(updateChannel),
   };
@@ -5968,6 +6373,8 @@ class AppSettings {
       startWithWindows: json['startWithWindows'] == true,
       startInTrayOnLaunch: json['startInTrayOnLaunch'] == true,
       sharedRoomKey: (json['sharedRoomKey'] as String? ?? '').trim(),
+      peerAllowlist: (json['peerAllowlist'] as String? ?? ''),
+      peerBlocklist: (json['peerBlocklist'] as String? ?? ''),
       autoUpdateChecks: json['autoUpdateChecks'] == true,
       updateChannel: updateChannelFromString(json['updateChannel'] as String?),
     );
@@ -6204,14 +6611,16 @@ class _Diagnostics {
     }
     line.write('\n');
 
-    _writeChain = _writeChain.then((_) async {
-      await _rotateLogsIfNeeded(file);
-      await file.writeAsString(
-        line.toString(),
-        mode: FileMode.writeOnlyAppend,
-        flush: true,
-      );
-    }).catchError((_) {});
+    _writeChain = _writeChain
+        .then((_) async {
+          await _rotateLogsIfNeeded(file);
+          await file.writeAsString(
+            line.toString(),
+            mode: FileMode.writeOnlyAppend,
+            flush: true,
+          );
+        })
+        .catchError((_) {});
     await _writeChain;
   }
 
@@ -6260,7 +6669,9 @@ class _Diagnostics {
       ..writeln('FileShare Crash Report')
       ..writeln('Timestamp: ${DateTime.now().toIso8601String()}')
       ..writeln('Source: $source')
-      ..writeln('OS: ${Platform.operatingSystem} ${Platform.operatingSystemVersion}')
+      ..writeln(
+        'OS: ${Platform.operatingSystem} ${Platform.operatingSystemVersion}',
+      )
       ..writeln('Dart: ${Platform.version}')
       ..writeln('Context: ${context ?? 'n/a'}')
       ..writeln('Library: ${library ?? 'n/a'}')
@@ -6278,11 +6689,7 @@ class _Diagnostics {
 class _SlidingRateLimiter {
   final Map<String, ListQueue<int>> _eventsByKey = {};
 
-  bool allow(
-    String key, {
-    required int maxEvents,
-    required Duration window,
-  }) {
+  bool allow(String key, {required int maxEvents, required Duration window}) {
     final now = DateTime.now().millisecondsSinceEpoch;
     final cutoff = now - window.inMilliseconds;
     final q = _eventsByKey.putIfAbsent(key, () => ListQueue<int>());
@@ -6311,21 +6718,23 @@ class _PerPeerRateLimiter {
     final micros = ((bytes * 1000000) / bytesPerSecond).ceil();
     final previous = _chains[peerKey] ?? Future<void>.value();
     final completer = Completer<void>();
-    _chains[peerKey] = previous.then((_) async {
-      final now = DateTime.now();
-      final next = _nextAllowedAt[peerKey];
-      if (next != null && next.isAfter(now)) {
-        await Future<void>.delayed(next.difference(now));
-      }
-      _nextAllowedAt[peerKey] = DateTime.now().add(
-        Duration(microseconds: max(1, micros)),
-      );
-      completer.complete();
-    }).catchError((_) {
-      if (!completer.isCompleted) {
-        completer.complete();
-      }
-    });
+    _chains[peerKey] = previous
+        .then((_) async {
+          final now = DateTime.now();
+          final next = _nextAllowedAt[peerKey];
+          if (next != null && next.isAfter(now)) {
+            await Future<void>.delayed(next.difference(now));
+          }
+          _nextAllowedAt[peerKey] = DateTime.now().add(
+            Duration(microseconds: max(1, micros)),
+          );
+          completer.complete();
+        })
+        .catchError((_) {
+          if (!completer.isCompleted) {
+            completer.complete();
+          }
+        });
     return completer.future;
   }
 }
@@ -6418,11 +6827,7 @@ PeerHealthSummary evaluatePeerHealth({
     tier = 'Poor';
   }
 
-  return PeerHealthSummary(
-    score: clamped,
-    tier: tier,
-    hint: hint,
-  );
+  return PeerHealthSummary(score: clamped, tier: tier, hint: hint);
 }
 
 enum TransferDirection { download, upload }
