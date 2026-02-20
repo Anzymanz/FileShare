@@ -113,6 +113,203 @@ const List<_ThemePreset> _themePresets = [
   _ThemePreset(name: 'Midnight', seed: Color(0xFF263046)),
 ];
 
+enum ItemSourceFilter { all, local, remote }
+
+enum ItemTypeFilter { all, image, document, media, archive, other }
+
+enum ItemSortMode {
+  ownerThenName,
+  nameAsc,
+  sizeDesc,
+  sizeAsc,
+  dateAddedDesc,
+  dateAddedAsc,
+}
+
+enum ItemLayoutMode { grid, list }
+
+String itemSourceFilterLabel(ItemSourceFilter filter) {
+  switch (filter) {
+    case ItemSourceFilter.all:
+      return 'All sources';
+    case ItemSourceFilter.local:
+      return 'Local only';
+    case ItemSourceFilter.remote:
+      return 'Remote only';
+  }
+}
+
+String itemTypeFilterLabel(ItemTypeFilter filter) {
+  switch (filter) {
+    case ItemTypeFilter.all:
+      return 'All types';
+    case ItemTypeFilter.image:
+      return 'Images';
+    case ItemTypeFilter.document:
+      return 'Documents';
+    case ItemTypeFilter.media:
+      return 'Media';
+    case ItemTypeFilter.archive:
+      return 'Archives';
+    case ItemTypeFilter.other:
+      return 'Other';
+  }
+}
+
+String itemSortModeLabel(ItemSortMode mode) {
+  switch (mode) {
+    case ItemSortMode.ownerThenName:
+      return 'Owner / Name';
+    case ItemSortMode.nameAsc:
+      return 'Name A-Z';
+    case ItemSortMode.sizeDesc:
+      return 'Size Largest';
+    case ItemSortMode.sizeAsc:
+      return 'Size Smallest';
+    case ItemSortMode.dateAddedDesc:
+      return 'Date Added (Newest)';
+    case ItemSortMode.dateAddedAsc:
+      return 'Date Added (Oldest)';
+  }
+}
+
+bool _matchesItemTypeFilter(ShareItem item, ItemTypeFilter filter) {
+  if (filter == ItemTypeFilter.all) return true;
+  final ext = p.extension(item.name).toLowerCase();
+  const imageExts = {
+    '.png',
+    '.jpg',
+    '.jpeg',
+    '.gif',
+    '.bmp',
+    '.webp',
+    '.svg',
+    '.ico',
+    '.heic',
+    '.tif',
+    '.tiff',
+  };
+  const docExts = {
+    '.txt',
+    '.md',
+    '.pdf',
+    '.doc',
+    '.docx',
+    '.xls',
+    '.xlsx',
+    '.ppt',
+    '.pptx',
+    '.csv',
+    '.rtf',
+    '.log',
+  };
+  const mediaExts = {
+    '.mp3',
+    '.wav',
+    '.flac',
+    '.m4a',
+    '.ogg',
+    '.aac',
+    '.mp4',
+    '.mov',
+    '.mkv',
+    '.avi',
+    '.wmv',
+    '.webm',
+  };
+  const archiveExts = {
+    '.zip',
+    '.rar',
+    '.7z',
+    '.tar',
+    '.gz',
+    '.bz2',
+    '.xz',
+  };
+  final isImage = imageExts.contains(ext);
+  final isDocument = docExts.contains(ext);
+  final isMedia = mediaExts.contains(ext);
+  final isArchive = archiveExts.contains(ext);
+  switch (filter) {
+    case ItemTypeFilter.all:
+      return true;
+    case ItemTypeFilter.image:
+      return isImage;
+    case ItemTypeFilter.document:
+      return isDocument;
+    case ItemTypeFilter.media:
+      return isMedia;
+    case ItemTypeFilter.archive:
+      return isArchive;
+    case ItemTypeFilter.other:
+      return !isImage && !isDocument && !isMedia && !isArchive;
+  }
+}
+
+List<ShareItem> computeVisibleItems({
+  required List<ShareItem> items,
+  required String query,
+  required ItemSourceFilter sourceFilter,
+  required ItemTypeFilter typeFilter,
+  required ItemSortMode sortMode,
+  required Map<String, DateTime> firstSeenByKey,
+}) {
+  final needle = query.trim().toLowerCase();
+  final filtered = items.where((item) {
+    if (sourceFilter == ItemSourceFilter.local && !item.local) return false;
+    if (sourceFilter == ItemSourceFilter.remote && item.local) return false;
+    if (!_matchesItemTypeFilter(item, typeFilter)) return false;
+    if (needle.isEmpty) return true;
+    final name = item.name.toLowerCase();
+    final rel = item.rel.toLowerCase();
+    final owner = item.owner.toLowerCase();
+    final ext = p.extension(item.name).toLowerCase();
+    return name.contains(needle) ||
+        rel.contains(needle) ||
+        owner.contains(needle) ||
+        ext.contains(needle);
+  }).toList(growable: false);
+
+  int compareName(ShareItem a, ShareItem b) {
+    final byName = a.name.toLowerCase().compareTo(b.name.toLowerCase());
+    if (byName != 0) return byName;
+    return a.key.compareTo(b.key);
+  }
+
+  int compareAdded(ShareItem a, ShareItem b) {
+    final atA = firstSeenByKey[a.key] ?? DateTime.fromMillisecondsSinceEpoch(0);
+    final atB = firstSeenByKey[b.key] ?? DateTime.fromMillisecondsSinceEpoch(0);
+    final byTime = atA.compareTo(atB);
+    if (byTime != 0) return byTime;
+    return compareName(a, b);
+  }
+
+  filtered.sort((a, b) {
+    switch (sortMode) {
+      case ItemSortMode.ownerThenName:
+        final byOwner = a.owner.toLowerCase().compareTo(b.owner.toLowerCase());
+        if (byOwner != 0) return byOwner;
+        return compareName(a, b);
+      case ItemSortMode.nameAsc:
+        return compareName(a, b);
+      case ItemSortMode.sizeDesc:
+        final bySize = b.size.compareTo(a.size);
+        if (bySize != 0) return bySize;
+        return compareName(a, b);
+      case ItemSortMode.sizeAsc:
+        final bySize = a.size.compareTo(b.size);
+        if (bySize != 0) return bySize;
+        return compareName(a, b);
+      case ItemSortMode.dateAddedDesc:
+        return compareAdded(b, a);
+      case ItemSortMode.dateAddedAsc:
+        return compareAdded(a, b);
+    }
+  });
+
+  return filtered;
+}
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await _diagnostics.initialize();
@@ -320,10 +517,17 @@ class _HomeState extends State<Home>
   bool _minimizeToTray = false;
   String _sharedRoomKey = '';
   bool _autoUpdateChecks = false;
+  ItemSourceFilter _sourceFilter = ItemSourceFilter.all;
+  ItemTypeFilter _typeFilter = ItemTypeFilter.all;
+  ItemSortMode _sortMode = ItemSortMode.ownerThenName;
+  ItemLayoutMode _layoutMode = ItemLayoutMode.grid;
+  double _iconSize = 64;
+  final Map<String, DateTime> _itemFirstSeenAt = <String, DateTime>{};
   bool _trayInitialized = false;
   bool _isHiddenToTray = false;
   bool _isQuitting = false;
   String? _lastDownloadDirectory;
+  late final TextEditingController _searchController;
   Timer? _flashTimer;
   Timer? _windowSaveDebounce;
   late final AnimationController _shakeController;
@@ -336,6 +540,7 @@ class _HomeState extends State<Home>
     _soundOnNudge = widget.initialSoundOnNudge;
     _sharedRoomKey = widget.initialSharedRoomKey;
     _autoUpdateChecks = widget.initialAutoUpdateChecks;
+    _searchController = TextEditingController();
     c.setSharedRoomKey(_sharedRoomKey);
     c.setAutoUpdateChecks(_autoUpdateChecks);
     _nudgeAudioPlayer = AudioPlayer()..setReleaseMode(ReleaseMode.stop);
@@ -370,7 +575,16 @@ class _HomeState extends State<Home>
   }
 
   void _changed() {
-    final remoteItems = c.items.where((e) => !e.local).toList(growable: false);
+    final allItems = c.items;
+    final seenNow = DateTime.now();
+    final keys = <String>{};
+    for (final item in allItems) {
+      keys.add(item.key);
+      _itemFirstSeenAt.putIfAbsent(item.key, () => seenNow);
+    }
+    _itemFirstSeenAt.removeWhere((key, _) => !keys.contains(key));
+
+    final remoteItems = allItems.where((e) => !e.local).toList(growable: false);
     final remoteCount = remoteItems.length;
     if (_isHiddenToTray && remoteCount > _lastRemoteCount) {
       unawaited(
@@ -732,6 +946,7 @@ class _HomeState extends State<Home>
   void dispose() {
     c.removeListener(_changed);
     c.dispose();
+    _searchController.dispose();
     unawaited(_nudgeAudioPlayer.dispose());
     windowManager.removeListener(this);
     _flashTimer?.cancel();
@@ -744,6 +959,15 @@ class _HomeState extends State<Home>
 
   @override
   Widget build(BuildContext context) {
+    final allItems = c.items;
+    final visibleItems = computeVisibleItems(
+      items: allItems,
+      query: _searchController.text,
+      sourceFilter: _sourceFilter,
+      typeFilter: _typeFilter,
+      sortMode: _sortMode,
+      firstSeenByKey: _itemFirstSeenAt,
+    );
     return Scaffold(
       body: SafeArea(
         child: DropRegion(
@@ -836,7 +1060,7 @@ class _HomeState extends State<Home>
                     Positioned.fill(
                       child: Padding(
                         padding: const EdgeInsets.fromLTRB(16, 56, 16, 16),
-                        child: c.items.isEmpty
+                        child: allItems.isEmpty
                             ? (over
                                   ? Center(
                                       child: Text(
@@ -847,12 +1071,59 @@ class _HomeState extends State<Home>
                                       ),
                                     )
                                   : const SizedBox.shrink())
-                            : _ExplorerGrid(
-                                items: c.items,
-                                buildDragItem: c.buildDragItem,
-                                onRemove: (item) => c.removeLocal(item.itemId),
-                                onDownload: _downloadRemoteItem,
-                                showGrid: _pointerHovering,
+                            : Column(
+                                children: [
+                                  _ExplorerToolbar(
+                                    searchController: _searchController,
+                                    onSearchChanged: (_) => setState(() {}),
+                                    sourceFilter: _sourceFilter,
+                                    onSourceFilterChanged: (value) {
+                                      setState(() => _sourceFilter = value);
+                                    },
+                                    typeFilter: _typeFilter,
+                                    onTypeFilterChanged: (value) {
+                                      setState(() => _typeFilter = value);
+                                    },
+                                    sortMode: _sortMode,
+                                    onSortModeChanged: (value) {
+                                      setState(() => _sortMode = value);
+                                    },
+                                    layoutMode: _layoutMode,
+                                    onToggleLayoutMode: () {
+                                      setState(() {
+                                        _layoutMode = _layoutMode == ItemLayoutMode.grid
+                                            ? ItemLayoutMode.list
+                                            : ItemLayoutMode.grid;
+                                      });
+                                    },
+                                    iconSize: _iconSize,
+                                    onIconSizeChanged: (value) {
+                                      setState(() => _iconSize = value);
+                                    },
+                                  ),
+                                  const SizedBox(height: 8),
+                                  Expanded(
+                                    child: visibleItems.isEmpty
+                                        ? Center(
+                                            child: Text(
+                                              'No items match current filters.',
+                                              style: Theme.of(context)
+                                                  .textTheme
+                                                  .titleSmall,
+                                            ),
+                                          )
+                                        : _ExplorerGrid(
+                                            items: visibleItems,
+                                            buildDragItem: c.buildDragItem,
+                                            onRemove: (item) =>
+                                                c.removeLocal(item.itemId),
+                                            onDownload: _downloadRemoteItem,
+                                            showGrid: _pointerHovering,
+                                            layoutMode: _layoutMode,
+                                            iconSize: _iconSize,
+                                          ),
+                                  ),
+                                ],
                               ),
                       ),
                     ),
@@ -1489,6 +1760,187 @@ Future<void> _flashTaskbar() async {
   calloc.free(info);
 }
 
+class _ExplorerToolbar extends StatelessWidget {
+  const _ExplorerToolbar({
+    required this.searchController,
+    required this.onSearchChanged,
+    required this.sourceFilter,
+    required this.onSourceFilterChanged,
+    required this.typeFilter,
+    required this.onTypeFilterChanged,
+    required this.sortMode,
+    required this.onSortModeChanged,
+    required this.layoutMode,
+    required this.onToggleLayoutMode,
+    required this.iconSize,
+    required this.onIconSizeChanged,
+  });
+
+  final TextEditingController searchController;
+  final ValueChanged<String> onSearchChanged;
+  final ItemSourceFilter sourceFilter;
+  final ValueChanged<ItemSourceFilter> onSourceFilterChanged;
+  final ItemTypeFilter typeFilter;
+  final ValueChanged<ItemTypeFilter> onTypeFilterChanged;
+  final ItemSortMode sortMode;
+  final ValueChanged<ItemSortMode> onSortModeChanged;
+  final ItemLayoutMode layoutMode;
+  final VoidCallback onToggleLayoutMode;
+  final double iconSize;
+  final ValueChanged<double> onIconSizeChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface.withValues(alpha: 0.72),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: theme.colorScheme.outlineVariant.withValues(alpha: 0.5),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          TextField(
+            controller: searchController,
+            onChanged: onSearchChanged,
+            decoration: InputDecoration(
+              isDense: true,
+              hintText: 'Search by name, owner, path, extension...',
+              prefixIcon: const Icon(Icons.search, size: 18),
+              suffixIcon: searchController.text.isEmpty
+                  ? null
+                  : IconButton(
+                      tooltip: 'Clear search',
+                      icon: const Icon(Icons.close, size: 16),
+                      onPressed: () {
+                        searchController.clear();
+                        onSearchChanged('');
+                      },
+                    ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 10,
+            runSpacing: 8,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              _ToolbarDropdown<ItemSourceFilter>(
+                value: sourceFilter,
+                label: 'Source',
+                items: ItemSourceFilter.values,
+                labelFor: itemSourceFilterLabel,
+                onChanged: onSourceFilterChanged,
+              ),
+              _ToolbarDropdown<ItemTypeFilter>(
+                value: typeFilter,
+                label: 'Type',
+                items: ItemTypeFilter.values,
+                labelFor: itemTypeFilterLabel,
+                onChanged: onTypeFilterChanged,
+              ),
+              _ToolbarDropdown<ItemSortMode>(
+                value: sortMode,
+                label: 'Sort',
+                items: ItemSortMode.values,
+                labelFor: itemSortModeLabel,
+                onChanged: onSortModeChanged,
+              ),
+              Tooltip(
+                message: layoutMode == ItemLayoutMode.grid
+                    ? 'Switch to list view'
+                    : 'Switch to grid view',
+                child: OutlinedButton.icon(
+                  onPressed: onToggleLayoutMode,
+                  icon: Icon(
+                    layoutMode == ItemLayoutMode.grid
+                        ? Icons.view_list_rounded
+                        : Icons.grid_view_rounded,
+                    size: 16,
+                  ),
+                  label: Text(
+                    layoutMode == ItemLayoutMode.grid ? 'List' : 'Grid',
+                  ),
+                ),
+              ),
+              SizedBox(
+                width: 220,
+                child: Row(
+                  children: [
+                    const Icon(Icons.photo_size_select_large, size: 16),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Slider(
+                        value: iconSize,
+                        min: 44,
+                        max: 96,
+                        divisions: 13,
+                        label: '${iconSize.round()} px',
+                        onChanged: onIconSizeChanged,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ToolbarDropdown<T> extends StatelessWidget {
+  const _ToolbarDropdown({
+    required this.value,
+    required this.label,
+    required this.items,
+    required this.labelFor,
+    required this.onChanged,
+  });
+
+  final T value;
+  final String label;
+  final List<T> items;
+  final String Function(T) labelFor;
+  final ValueChanged<T> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color: Theme.of(context).colorScheme.outlineVariant,
+        ),
+      ),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<T>(
+          value: value,
+          isDense: true,
+          borderRadius: BorderRadius.circular(8),
+          items: items
+              .map(
+                (item) => DropdownMenuItem<T>(
+                  value: item,
+                  child: Text('$label: ${labelFor(item)}'),
+                ),
+              )
+              .toList(growable: false),
+          onChanged: (next) {
+            if (next != null) onChanged(next);
+          },
+        ),
+      ),
+    );
+  }
+}
+
 class _ExplorerGrid extends StatelessWidget {
   const _ExplorerGrid({
     required this.items,
@@ -1496,6 +1948,8 @@ class _ExplorerGrid extends StatelessWidget {
     required this.onRemove,
     required this.onDownload,
     required this.showGrid,
+    required this.layoutMode,
+    required this.iconSize,
   });
 
   final List<ShareItem> items;
@@ -1503,12 +1957,15 @@ class _ExplorerGrid extends StatelessWidget {
   final ValueChanged<ShareItem> onRemove;
   final Future<void> Function(ShareItem) onDownload;
   final bool showGrid;
+  final ItemLayoutMode layoutMode;
+  final double iconSize;
 
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final tileWidth = 120.0;
+        final normalizedIconSize = iconSize.clamp(44.0, 96.0);
+        final tileWidth = max(116.0, normalizedIconSize + 56.0);
         final columns = max(1, (constraints.maxWidth / tileWidth).floor());
         final groups = <String, List<ShareItem>>{};
         for (final item in items) {
@@ -1547,27 +2004,52 @@ class _ExplorerGrid extends StatelessWidget {
                             style: Theme.of(context).textTheme.labelLarge,
                           ),
                         ),
-                        GridView.builder(
-                          shrinkWrap: true,
-                          physics: const NeverScrollableScrollPhysics(),
-                          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                            crossAxisCount: columns,
-                            mainAxisSpacing: 8,
-                            crossAxisSpacing: 8,
-                            childAspectRatio: 0.9,
+                        if (layoutMode == ItemLayoutMode.grid)
+                          GridView.builder(
+                            shrinkWrap: true,
+                            physics: const NeverScrollableScrollPhysics(),
+                            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                              crossAxisCount: columns,
+                              mainAxisSpacing: 8,
+                              crossAxisSpacing: 8,
+                              childAspectRatio: 0.9,
+                            ),
+                            itemCount: sectionItems.length,
+                            itemBuilder: (context, index) {
+                              final item = sectionItems[index];
+                              return IconTile(
+                                key: ValueKey(item.key),
+                                item: item,
+                                createItem: buildDragItem,
+                                onRemove: item.local ? () => onRemove(item) : null,
+                                onDownload: item.local
+                                    ? null
+                                    : () => onDownload(item),
+                                iconSize: normalizedIconSize,
+                              );
+                            },
+                          )
+                        else
+                          ListView.separated(
+                            shrinkWrap: true,
+                            physics: const NeverScrollableScrollPhysics(),
+                            itemCount: sectionItems.length,
+                            separatorBuilder: (_, __) => const SizedBox(height: 6),
+                            itemBuilder: (context, index) {
+                              final item = sectionItems[index];
+                              return IconTile(
+                                key: ValueKey(item.key),
+                                item: item,
+                                createItem: buildDragItem,
+                                onRemove: item.local ? () => onRemove(item) : null,
+                                onDownload: item.local
+                                    ? null
+                                    : () => onDownload(item),
+                                compact: true,
+                                iconSize: normalizedIconSize,
+                              );
+                            },
                           ),
-                          itemCount: sectionItems.length,
-                          itemBuilder: (context, index) {
-                            final item = sectionItems[index];
-                            return IconTile(
-                              key: ValueKey(item.key),
-                              item: item,
-                              createItem: buildDragItem,
-                              onRemove: item.local ? () => onRemove(item) : null,
-                              onDownload: item.local ? null : () => onDownload(item),
-                            );
-                          },
-                        ),
                       ],
                     ),
                   );
@@ -1611,12 +2093,16 @@ class IconTile extends StatefulWidget {
     required this.createItem,
     required this.onRemove,
     required this.onDownload,
+    this.compact = false,
+    this.iconSize = 64,
   });
 
   final ShareItem item;
   final Future<DragItem?> Function(ShareItem) createItem;
   final VoidCallback? onRemove;
   final Future<void> Function()? onDownload;
+  final bool compact;
+  final double iconSize;
 
   @override
   State<IconTile> createState() => _IconTileState();
@@ -1698,7 +2184,108 @@ class _IconTileState extends State<IconTile> {
     final iconData = _iconForName(widget.item.name);
     final iconColor = _iconColorForName(widget.item.name, theme);
     final iconBytes = widget.item.iconBytes;
+    final iconSize = widget.iconSize.clamp(44.0, 96.0);
+    final iconGlyphSize = max(20.0, min(iconSize * 0.56, 44.0));
     final label = p.basename(widget.item.name);
+    final badges = Wrap(
+      alignment: WrapAlignment.center,
+      spacing: 4,
+      runSpacing: 4,
+      children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+          decoration: BoxDecoration(
+            color: widget.item.local
+                ? Colors.greenAccent.shade100.withValues(alpha: 0.25)
+                : Colors.blueAccent.shade100.withValues(alpha: 0.25),
+            borderRadius: BorderRadius.circular(999),
+          ),
+          child: Text(
+            widget.item.local ? 'LOCAL' : 'REMOTE',
+            style: theme.textTheme.labelSmall?.copyWith(
+              fontSize: 10,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+          decoration: BoxDecoration(
+            color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.6),
+            borderRadius: BorderRadius.circular(999),
+          ),
+          child: Text(
+            widget.item.owner,
+            style: theme.textTheme.labelSmall?.copyWith(fontSize: 10),
+          ),
+        ),
+      ],
+    );
+
+    final iconCard = Stack(
+      children: [
+        Container(
+          width: iconSize,
+          height: iconSize,
+          decoration: BoxDecoration(
+            color: theme.colorScheme.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(widget.compact ? 10 : 12),
+            boxShadow: [
+              BoxShadow(
+                color: theme.colorScheme.shadow.withValues(alpha: 0.15),
+                blurRadius: 8,
+                offset: const Offset(0, 4),
+              ),
+            ],
+          ),
+          child: iconBytes == null
+              ? Icon(iconData, size: iconGlyphSize, color: iconColor)
+              : ClipRRect(
+                  borderRadius: BorderRadius.circular(widget.compact ? 8 : 10),
+                  child: Image.memory(
+                    iconBytes,
+                    fit: BoxFit.contain,
+                    gaplessPlayback: true,
+                  ),
+                ),
+        ),
+        Positioned(
+          right: 4,
+          bottom: 4,
+          child: Container(
+            width: 12,
+            height: 12,
+            decoration: BoxDecoration(
+              color: widget.item.local
+                  ? Colors.greenAccent.shade400
+                  : Colors.blueAccent.shade200,
+              shape: BoxShape.circle,
+              border: Border.all(color: theme.colorScheme.surface, width: 1.2),
+            ),
+          ),
+        ),
+      ],
+    );
+
+    final actionButtons = Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (widget.onDownload != null)
+          IconButton(
+            tooltip: 'Download...',
+            visualDensity: VisualDensity.compact,
+            onPressed: () => widget.onDownload?.call(),
+            icon: const Icon(Icons.download, size: 16),
+          ),
+        if (widget.onRemove != null)
+          IconButton(
+            tooltip: 'Remove',
+            visualDensity: VisualDensity.compact,
+            onPressed: widget.onRemove,
+            icon: const Icon(Icons.close, size: 16),
+          ),
+      ],
+    );
 
     return DragItemWidget(
       allowedOperations: () => [DropOperation.copy],
@@ -1714,135 +2301,73 @@ class _IconTileState extends State<IconTile> {
             child: GestureDetector(
               behavior: HitTestBehavior.opaque,
               onSecondaryTapDown: _showContextMenu,
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                Stack(
-                  children: [
-                    Container(
-                      width: 64,
-                      height: 64,
+              child: widget.compact
+                  ? Container(
+                      padding: const EdgeInsets.fromLTRB(8, 6, 6, 6),
                       decoration: BoxDecoration(
-                        color: theme.colorScheme.surfaceContainerHighest,
-                        borderRadius: BorderRadius.circular(12),
-                        boxShadow: [
-                          BoxShadow(
-                            color: theme.colorScheme.shadow.withValues(
-                              alpha: 0.15,
-                            ),
-                            blurRadius: 8,
-                            offset: const Offset(0, 4),
+                        color: theme.colorScheme.surface.withValues(alpha: 0.68),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                          color: theme.colorScheme.outlineVariant.withValues(
+                            alpha: 0.42,
                           ),
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          iconCard,
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  label,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: theme.textTheme.bodyMedium?.copyWith(
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  '${_fmt(widget.item.size)} • ${widget.item.rel}',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: theme.textTheme.bodySmall,
+                                ),
+                                const SizedBox(height: 4),
+                                badges,
+                              ],
+                            ),
+                          ),
+                          if (widget.onDownload != null || widget.onRemove != null)
+                            actionButtons,
                         ],
                       ),
-                      child: iconBytes == null
-                          ? Icon(iconData, size: 36, color: iconColor)
-                          : ClipRRect(
-                              borderRadius: BorderRadius.circular(10),
-                              child: Image.memory(
-                                iconBytes,
-                                fit: BoxFit.contain,
-                                gaplessPlayback: true,
-                              ),
-                            ),
-                    ),
-                    Positioned(
-                      right: 4,
-                      bottom: 4,
-                      child: Container(
-                        width: 12,
-                        height: 12,
-                        decoration: BoxDecoration(
-                          color: widget.item.local
-                              ? Colors.greenAccent.shade400
-                              : Colors.blueAccent.shade200,
-                          shape: BoxShape.circle,
-                          border: Border.all(
-                            color: theme.colorScheme.surface,
-                            width: 1.2,
+                    )
+                  : Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        iconCard,
+                        const SizedBox(height: 8),
+                        badges,
+                        const SizedBox(height: 6),
+                        SizedBox(
+                          width: max(96.0, iconSize + 36),
+                          child: Text(
+                            label,
+                            textAlign: TextAlign.center,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.bodySmall,
                           ),
                         ),
-                      ),
+                        if (widget.onDownload != null || widget.onRemove != null)
+                          actionButtons,
+                      ],
                     ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                Wrap(
-                  alignment: WrapAlignment.center,
-                  spacing: 4,
-                  runSpacing: 4,
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 6,
-                        vertical: 2,
-                      ),
-                      decoration: BoxDecoration(
-                        color: widget.item.local
-                            ? Colors.greenAccent.shade100.withValues(alpha: 0.25)
-                            : Colors.blueAccent.shade100.withValues(alpha: 0.25),
-                        borderRadius: BorderRadius.circular(999),
-                      ),
-                      child: Text(
-                        widget.item.local ? 'LOCAL' : 'REMOTE',
-                        style: theme.textTheme.labelSmall?.copyWith(
-                          fontSize: 10,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                    ),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 6,
-                        vertical: 2,
-                      ),
-                      decoration: BoxDecoration(
-                        color: theme.colorScheme.surfaceContainerHighest
-                            .withValues(alpha: 0.6),
-                        borderRadius: BorderRadius.circular(999),
-                      ),
-                      child: Text(
-                        widget.item.owner,
-                        style: theme.textTheme.labelSmall?.copyWith(
-                          fontSize: 10,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 6),
-                SizedBox(
-                  width: 110,
-                  child: Text(
-                    label,
-                    textAlign: TextAlign.center,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.bodySmall,
-                  ),
-                ),
-                if (widget.onDownload != null || widget.onRemove != null)
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (widget.onDownload != null)
-                        IconButton(
-                          tooltip: 'Download...',
-                          visualDensity: VisualDensity.compact,
-                          onPressed: () => widget.onDownload?.call(),
-                          icon: const Icon(Icons.download, size: 16),
-                        ),
-                      if (widget.onRemove != null)
-                        IconButton(
-                          tooltip: 'Remove',
-                          visualDensity: VisualDensity.compact,
-                          onPressed: widget.onRemove,
-                          icon: const Icon(Icons.close, size: 16),
-                        ),
-                    ],
-                  ),
-                ],
-              ),
             ),
           ),
         ),
