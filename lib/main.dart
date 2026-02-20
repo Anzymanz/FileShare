@@ -1558,6 +1558,7 @@ class _HomeState extends State<Home>
                   for (final p in peers)
                     Text(
                       '- ${p.name} | ${p.addr.address}:${p.port}'
+                      ' | ${_peerAvailabilityLabel(c.peerAvailability(p))}'
                       ' | ${_peerStateLabel(c.peerState(p))}'
                       '${c.peerStatus[p.id] == null ? '' : ' | ${c.peerStatus[p.id]}'}',
                     ),
@@ -2992,6 +2993,13 @@ class Controller extends ChangeNotifier {
       return PeerState.discovered;
     }
     return PeerState.reachable;
+  }
+
+  PeerAvailability peerAvailability(Peer peer) {
+    final age = DateTime.now().difference(peer.lastGoodContact);
+    if (age <= const Duration(seconds: 5)) return PeerAvailability.active;
+    if (age <= const Duration(seconds: 20)) return PeerAvailability.away;
+    return PeerAvailability.idle;
   }
 
   void _incDiagnostic(String key) {
@@ -5104,6 +5112,17 @@ String _peerStateLabel(PeerState state) {
   }
 }
 
+String _peerAvailabilityLabel(PeerAvailability availability) {
+  switch (availability) {
+    case PeerAvailability.active:
+      return 'Active';
+    case PeerAvailability.away:
+      return 'Away';
+    case PeerAvailability.idle:
+      return 'Idle';
+  }
+}
+
 Future<File> _windowStateFile() async {
   final dir = await _appDataDir();
   return File(p.join(dir.path, 'window_state.json'));
@@ -5421,6 +5440,8 @@ class _TransferCanceledException implements Exception {
 }
 
 enum PeerState { discovered, syncing, reachable, stale }
+
+enum PeerAvailability { active, away, idle }
 
 enum TransferDirection { download, upload }
 
