@@ -70,6 +70,7 @@ const Duration _refreshIntervalLowTraffic = Duration(milliseconds: 800);
 const Duration _minFetchInterval = Duration(milliseconds: 280);
 const Duration _pruneInterval = Duration(seconds: 3);
 const Duration _peerPruneAfter = Duration(seconds: 45);
+const Duration _handoffApprovalTtl = Duration(minutes: 2);
 final bool _isTest =
     bool.fromEnvironment('FLUTTER_TEST') ||
     Platform.environment.containsKey('FLUTTER_TEST');
@@ -965,6 +966,7 @@ class _MyAppState extends State<MyApp> {
   late bool startInTrayOnLaunch;
   late bool sendToIntegrationEnabled;
   late bool dragOutCompatibilityMode;
+  late bool handoffModeEnabled;
   late String roomChannel;
   late String sharedRoomKey;
   late String peerAllowlist;
@@ -991,6 +993,7 @@ class _MyAppState extends State<MyApp> {
     startInTrayOnLaunch = widget.initialSettings.startInTrayOnLaunch;
     sendToIntegrationEnabled = widget.initialSettings.sendToIntegrationEnabled;
     dragOutCompatibilityMode = widget.initialSettings.dragOutCompatibilityMode;
+    handoffModeEnabled = widget.initialSettings.handoffModeEnabled;
     roomChannel = widget.initialSettings.roomChannel;
     sharedRoomKey = widget.initialSettings.sharedRoomKey;
     peerAllowlist = widget.initialSettings.peerAllowlist;
@@ -1015,6 +1018,7 @@ class _MyAppState extends State<MyApp> {
         startInTrayOnLaunch: startInTrayOnLaunch,
         sendToIntegrationEnabled: sendToIntegrationEnabled,
         dragOutCompatibilityMode: dragOutCompatibilityMode,
+        handoffModeEnabled: handoffModeEnabled,
         roomChannel: roomChannel,
         sharedRoomKey: sharedRoomKey,
         peerAllowlist: peerAllowlist,
@@ -1061,6 +1065,7 @@ class _MyAppState extends State<MyApp> {
         initialStartInTrayOnLaunch: startInTrayOnLaunch,
         initialSendToIntegrationEnabled: sendToIntegrationEnabled,
         initialDragOutCompatibilityMode: dragOutCompatibilityMode,
+        initialHandoffModeEnabled: handoffModeEnabled,
         startInTrayRequested: widget.startInTrayRequested,
         initialRoomChannel: roomChannel,
         initialSharedRoomKey: sharedRoomKey,
@@ -1104,6 +1109,10 @@ class _MyAppState extends State<MyApp> {
         },
         onDragOutCompatibilityModeChanged: (value) {
           setState(() => dragOutCompatibilityMode = value);
+          unawaited(_persistSettings());
+        },
+        onHandoffModeChanged: (value) {
+          setState(() => handoffModeEnabled = value);
           unawaited(_persistSettings());
         },
         onRoomChannelChanged: (value) {
@@ -1166,6 +1175,7 @@ class Home extends StatefulWidget {
     required this.initialStartInTrayOnLaunch,
     required this.initialSendToIntegrationEnabled,
     required this.initialDragOutCompatibilityMode,
+    required this.initialHandoffModeEnabled,
     required this.startInTrayRequested,
     required this.initialRoomChannel,
     required this.initialSharedRoomKey,
@@ -1187,6 +1197,7 @@ class Home extends StatefulWidget {
     required this.onStartInTrayOnLaunchChanged,
     required this.onSendToIntegrationChanged,
     required this.onDragOutCompatibilityModeChanged,
+    required this.onHandoffModeChanged,
     required this.onRoomChannelChanged,
     required this.onSharedRoomKeyChanged,
     required this.onPeerAllowlistChanged,
@@ -1208,6 +1219,7 @@ class Home extends StatefulWidget {
   final bool initialStartInTrayOnLaunch;
   final bool initialSendToIntegrationEnabled;
   final bool initialDragOutCompatibilityMode;
+  final bool initialHandoffModeEnabled;
   final bool startInTrayRequested;
   final String initialRoomChannel;
   final String initialSharedRoomKey;
@@ -1229,6 +1241,7 @@ class Home extends StatefulWidget {
   final ValueChanged<bool> onStartInTrayOnLaunchChanged;
   final ValueChanged<bool> onSendToIntegrationChanged;
   final ValueChanged<bool> onDragOutCompatibilityModeChanged;
+  final ValueChanged<bool> onHandoffModeChanged;
   final ValueChanged<String> onRoomChannelChanged;
   final ValueChanged<String> onSharedRoomKeyChanged;
   final ValueChanged<String> onPeerAllowlistChanged;
@@ -1263,6 +1276,7 @@ class _HomeState extends State<Home>
   bool _startInTrayOnLaunch = false;
   bool _sendToIntegrationEnabled = false;
   bool _dragOutCompatibilityMode = false;
+  bool _handoffModeEnabled = false;
   String _roomChannel = '';
   String _sharedRoomKey = '';
   String _peerAllowlist = '';
@@ -1305,6 +1319,7 @@ class _HomeState extends State<Home>
     _startInTrayOnLaunch = widget.initialStartInTrayOnLaunch;
     _sendToIntegrationEnabled = widget.initialSendToIntegrationEnabled;
     _dragOutCompatibilityMode = widget.initialDragOutCompatibilityMode;
+    _handoffModeEnabled = widget.initialHandoffModeEnabled;
     _roomChannel = widget.initialRoomChannel;
     _soundOnNudge = widget.initialSoundOnNudge;
     _sharedRoomKey = widget.initialSharedRoomKey;
@@ -1331,6 +1346,7 @@ class _HomeState extends State<Home>
       globalRateLimitMBps: _globalRateLimitMBps,
     );
     c.setDragOutCompatibilityMode(_dragOutCompatibilityMode);
+    c.setHandoffMode(_handoffModeEnabled);
     c.setAutoUpdateChecks(_autoUpdateChecks);
     c.setUpdateChannel(_updateChannel);
     _nudgeAudioPlayer = AudioPlayer()..setReleaseMode(ReleaseMode.stop);
@@ -2697,6 +2713,8 @@ class _HomeState extends State<Home>
     bool applyingStartup = false;
     String? sendToStatus;
     bool applyingSendTo = false;
+    String? handoffStatus;
+    List<HandoffRequest> handoffRequests = c.pendingHandoffRequests;
     String? layoutStatus;
     bool checkingUpdates = false;
     String? exportStatus;
@@ -3050,6 +3068,87 @@ class _HomeState extends State<Home>
                       widget.onDragOutCompatibilityModeChanged(value);
                     },
                   ),
+                  SwitchListTile.adaptive(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Handoff mode'),
+                    subtitle: const Text(
+                      'Require owner approval before peers can download your files',
+                    ),
+                    value: _handoffModeEnabled,
+                    onChanged: (value) {
+                      setDialogState(() {
+                        _handoffModeEnabled = value;
+                        handoffRequests = c.pendingHandoffRequests;
+                        handoffStatus = value
+                            ? 'Handoff mode enabled'
+                            : 'Handoff mode disabled';
+                      });
+                      c.setHandoffMode(value);
+                      widget.onHandoffModeChanged(value);
+                    },
+                  ),
+                  if (_handoffModeEnabled) ...[
+                    Text('Pending approvals: ${handoffRequests.length}'),
+                    if (handoffRequests.isEmpty)
+                      const Padding(
+                        padding: EdgeInsets.only(top: 4, bottom: 6),
+                        child: Text('No pending download approvals'),
+                      ),
+                    for (final request in handoffRequests.take(12))
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 4),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(
+                              child: Text(
+                                '${request.peerName} (${request.remoteAddress}'
+                                '${request.remotePort == null ? '' : ':${request.remotePort}'})'
+                                ' -> ${request.itemName}'
+                                ' [attempts: ${request.attempts}]',
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            TextButton(
+                              onPressed: () {
+                                final approved = c.approveHandoffRequest(
+                                  request.key,
+                                );
+                                setDialogState(() {
+                                  handoffRequests = c.pendingHandoffRequests;
+                                  handoffStatus = approved
+                                      ? 'Approved ${request.peerName} for ${request.itemName}'
+                                      : 'Request already cleared';
+                                });
+                              },
+                              child: const Text('Approve'),
+                            ),
+                            TextButton(
+                              onPressed: () {
+                                final denied = c.denyHandoffRequest(
+                                  request.key,
+                                );
+                                setDialogState(() {
+                                  handoffRequests = c.pendingHandoffRequests;
+                                  handoffStatus = denied
+                                      ? 'Denied ${request.peerName} for ${request.itemName}'
+                                      : 'Request already cleared';
+                                });
+                              },
+                              child: const Text('Deny'),
+                            ),
+                          ],
+                        ),
+                      ),
+                    if (handoffRequests.length > 12)
+                      Text('...and ${handoffRequests.length - 12} more'),
+                  ],
+                  if (handoffStatus != null) ...[
+                    const SizedBox(height: 4),
+                    Text(handoffStatus!),
+                  ],
                   const SizedBox(height: 8),
                   const Text('Window Layout Presets'),
                   const SizedBox(height: 4),
@@ -4493,6 +4592,32 @@ SelectedItemSummary summarizeSelectedItems({
   );
 }
 
+class HandoffRequest {
+  HandoffRequest({
+    required this.key,
+    required this.peerId,
+    required this.peerName,
+    required this.remoteAddress,
+    required this.remotePort,
+    required this.itemId,
+    required this.itemName,
+    required this.firstSeenAt,
+    required this.lastSeenAt,
+    required this.attempts,
+  });
+
+  final String key;
+  final String peerId;
+  final String peerName;
+  final String remoteAddress;
+  final int? remotePort;
+  final String itemId;
+  final String itemName;
+  final DateTime firstSeenAt;
+  DateTime lastSeenAt;
+  int attempts;
+}
+
 class _ExplorerGrid extends StatelessWidget {
   const _ExplorerGrid({
     required this.items,
@@ -5481,6 +5606,10 @@ class Controller extends ChangeNotifier {
   bool _autoUpdateChecks = false;
   UpdateChannel _updateChannel = UpdateChannel.stable;
   bool _dragOutCompatibilityMode = false;
+  bool _handoffModeEnabled = false;
+  final Map<String, HandoffRequest> _pendingHandoffRequests =
+      <String, HandoffRequest>{};
+  final Map<String, DateTime> _handoffApprovals = <String, DateTime>{};
   DiscoveryProfile _discoveryProfile = DiscoveryProfile.balanced;
   DateTime _lastDiscoveryProfileEval = DateTime.fromMillisecondsSinceEpoch(0);
   String? latestReleaseTag;
@@ -5501,6 +5630,7 @@ class Controller extends ChangeNotifier {
   String get sharedRoomKey => _sharedRoomKey;
   Set<String> get peerAllowlist => Set<String>.unmodifiable(_peerAllowlist);
   Set<String> get peerBlocklist => Set<String>.unmodifiable(_peerBlocklist);
+  bool get handoffModeEnabled => _handoffModeEnabled;
 
   void setRoomChannel(String value) {
     final normalized = normalizeRoomChannel(value);
@@ -5618,6 +5748,102 @@ class Controller extends ChangeNotifier {
 
   void setDragOutCompatibilityMode(bool enabled) {
     _dragOutCompatibilityMode = enabled;
+  }
+
+  void setHandoffMode(bool enabled) {
+    if (_handoffModeEnabled == enabled) return;
+    _handoffModeEnabled = enabled;
+    if (!enabled) {
+      _pendingHandoffRequests.clear();
+      _handoffApprovals.clear();
+    }
+    notifyListeners();
+  }
+
+  List<HandoffRequest> get pendingHandoffRequests {
+    final out = _pendingHandoffRequests.values.toList(growable: false)
+      ..sort((a, b) => b.lastSeenAt.compareTo(a.lastSeenAt));
+    return out;
+  }
+
+  String _handoffRequestKey({
+    required String peerId,
+    required String remoteAddress,
+    required String itemId,
+  }) {
+    final p = peerId.trim().toLowerCase();
+    final ip = remoteAddress.trim().toLowerCase();
+    final it = itemId.trim();
+    return '$p|$ip|$it';
+  }
+
+  void _pruneHandoffApprovals({DateTime? now}) {
+    final stamp = now ?? DateTime.now();
+    _handoffApprovals.removeWhere((_, expiry) => !expiry.isAfter(stamp));
+  }
+
+  bool _consumeHandoffApproval(String key, {DateTime? now}) {
+    _pruneHandoffApprovals(now: now);
+    final expiry = _handoffApprovals[key];
+    if (expiry == null) return false;
+    _handoffApprovals.remove(key);
+    return true;
+  }
+
+  void _recordHandoffRequest({
+    required String key,
+    required String peerId,
+    required String peerName,
+    required String remoteAddress,
+    required int? remotePort,
+    required String itemId,
+    required String itemName,
+  }) {
+    final now = DateTime.now();
+    final existing = _pendingHandoffRequests[key];
+    if (existing == null) {
+      _pendingHandoffRequests[key] = HandoffRequest(
+        key: key,
+        peerId: peerId,
+        peerName: peerName,
+        remoteAddress: remoteAddress,
+        remotePort: remotePort,
+        itemId: itemId,
+        itemName: itemName,
+        firstSeenAt: now,
+        lastSeenAt: now,
+        attempts: 1,
+      );
+    } else {
+      existing.lastSeenAt = now;
+      existing.attempts++;
+    }
+
+    const maxPending = 80;
+    if (_pendingHandoffRequests.length > maxPending) {
+      final oldest = _pendingHandoffRequests.values.toList(growable: false)
+        ..sort((a, b) => a.lastSeenAt.compareTo(b.lastSeenAt));
+      final trimCount = _pendingHandoffRequests.length - maxPending;
+      for (var i = 0; i < trimCount; i++) {
+        _pendingHandoffRequests.remove(oldest[i].key);
+      }
+    }
+  }
+
+  bool approveHandoffRequest(String key) {
+    final request = _pendingHandoffRequests.remove(key);
+    if (request == null) return false;
+    _handoffApprovals[key] = DateTime.now().add(_handoffApprovalTtl);
+    notifyListeners();
+    return true;
+  }
+
+  bool denyHandoffRequest(String key) {
+    final removed = _pendingHandoffRequests.remove(key) != null;
+    if (removed) {
+      notifyListeners();
+    }
+    return removed;
   }
 
   void setUpdateChannel(UpdateChannel channel) {
@@ -7590,27 +7816,13 @@ class Controller extends ChangeNotifier {
       if (type == 'download') {
         final id = _safeString(req['id'], maxChars: 256);
         if (id == null) return;
-        final peerKey =
-            _safeString(req['clientId'], maxChars: _maxPeerIdChars) ?? remoteIp;
-        if (!_acquirePeerSlot(
-          _activePeerUploads,
-          peerKey,
-          _maxConcurrentTransfersPerPeer,
-        )) {
-          _incDiagnostic('upload_peer_slot_reject');
-          s.write(
-            jsonEncode(
-              _withAuth({
-                'type': 'error',
-                'room': _roomChannel,
-                'message': 'Too many concurrent uploads for this peer',
-              }),
-            ),
-          );
-          s.write('\n');
-          await s.flush();
-          return;
-        }
+        final peerId =
+            _safeString(req['clientId'], maxChars: _maxPeerIdChars) ?? '';
+        final peerName =
+            _safeString(req['clientName'], maxChars: _maxPeerNameChars) ??
+            remoteIp;
+        final peerPort = _safeInt(req['clientPort'], min: 1, max: 65535);
+        final peerKey = peerId.isEmpty ? remoteIp : peerId;
         final item = _local[id];
         if (item == null) {
           s.write(
@@ -7641,6 +7853,59 @@ class Controller extends ChangeNotifier {
           await s.flush();
           return;
         }
+        if (_handoffModeEnabled) {
+          final handoffKey = _handoffRequestKey(
+            peerId: peerId,
+            remoteAddress: remoteIp,
+            itemId: id,
+          );
+          final approved = _consumeHandoffApproval(handoffKey);
+          if (!approved) {
+            _recordHandoffRequest(
+              key: handoffKey,
+              peerId: peerId,
+              peerName: peerName,
+              remoteAddress: remoteIp,
+              remotePort: peerPort,
+              itemId: id,
+              itemName: item.rel,
+            );
+            s.write(
+              jsonEncode(
+                _withAuth({
+                  'type': 'error',
+                  'room': _roomChannel,
+                  'code': 'handoff_required',
+                  'message':
+                      'Owner approval required before this download can start',
+                }),
+              ),
+            );
+            s.write('\n');
+            await s.flush();
+            notifyListeners();
+            return;
+          }
+        }
+        if (!_acquirePeerSlot(
+          _activePeerUploads,
+          peerKey,
+          _maxConcurrentTransfersPerPeer,
+        )) {
+          _incDiagnostic('upload_peer_slot_reject');
+          s.write(
+            jsonEncode(
+              _withAuth({
+                'type': 'error',
+                'room': _roomChannel,
+                'message': 'Too many concurrent uploads for this peer',
+              }),
+            ),
+          );
+          s.write('\n');
+          await s.flush();
+          return;
+        }
         final sha256 = await _ensureLocalItemChecksum(item.id);
         s.write(
           jsonEncode(
@@ -7656,8 +7921,6 @@ class Controller extends ChangeNotifier {
         );
         s.write('\n');
         await s.flush();
-        final peerName =
-            (req['clientName'] as String?) ?? s.remoteAddress.address;
         final transferId = _beginTransfer(
           name: item.rel,
           peerName: peerName,
@@ -7785,7 +8048,18 @@ class Controller extends ChangeNotifier {
       final m = jsonDecode(h.line) as Map<String, dynamic>;
       if (!_verifyAuth(m)) throw Exception('Peer authentication failed');
       if (!_isSameRoom(m['room'])) throw Exception('Room/channel mismatch');
-      if (m['type'] == 'error') throw Exception('Peer rejected transfer');
+      if (m['type'] == 'error') {
+        final code = _safeString(m['code'], maxChars: 64);
+        final message =
+            _safeString(m['message'], maxChars: 240) ??
+            'Peer rejected transfer';
+        if (code == 'handoff_required') {
+          throw Exception(
+            'Owner approval required. Ask peer to approve and retry',
+          );
+        }
+        throw Exception(message);
+      }
       if (m['type'] != 'file') throw Exception('Bad response');
       final totalBytes = (m['size'] as num).toInt();
       final expectedSha256 =
@@ -8394,6 +8668,7 @@ class AppSettings {
     this.startInTrayOnLaunch = false,
     this.sendToIntegrationEnabled = false,
     this.dragOutCompatibilityMode = false,
+    this.handoffModeEnabled = false,
     this.roomChannel = '',
     this.sharedRoomKey = '',
     this.peerAllowlist = '',
@@ -8415,6 +8690,7 @@ class AppSettings {
   final bool startInTrayOnLaunch;
   final bool sendToIntegrationEnabled;
   final bool dragOutCompatibilityMode;
+  final bool handoffModeEnabled;
   final String roomChannel;
   final String sharedRoomKey;
   final String peerAllowlist;
@@ -8436,6 +8712,7 @@ class AppSettings {
     'startInTrayOnLaunch': startInTrayOnLaunch,
     'sendToIntegrationEnabled': sendToIntegrationEnabled,
     'dragOutCompatibilityMode': dragOutCompatibilityMode,
+    'handoffModeEnabled': handoffModeEnabled,
     'roomChannel': roomChannel,
     'sharedRoomKey': sharedRoomKey,
     'peerAllowlist': peerAllowlist,
@@ -8463,6 +8740,7 @@ class AppSettings {
       startInTrayOnLaunch: json['startInTrayOnLaunch'] == true,
       sendToIntegrationEnabled: json['sendToIntegrationEnabled'] == true,
       dragOutCompatibilityMode: json['dragOutCompatibilityMode'] == true,
+      handoffModeEnabled: json['handoffModeEnabled'] == true,
       roomChannel: normalizeRoomChannel((json['roomChannel'] as String? ?? '')),
       sharedRoomKey: (json['sharedRoomKey'] as String? ?? '').trim(),
       peerAllowlist: (json['peerAllowlist'] as String? ?? ''),

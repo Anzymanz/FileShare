@@ -154,4 +154,15 @@ void main() {
     final restored = AppSettings.fromJson(settings.toJson());
     expect(restored.dragOutCompatibilityMode, isTrue);
   });
+
+  test('AppSettings serializes handoff mode preference', () {
+    const settings = AppSettings(
+      darkMode: true,
+      themeIndex: 0,
+      soundOnNudge: false,
+      handoffModeEnabled: true,
+    );
+    final restored = AppSettings.fromJson(settings.toJson());
+    expect(restored.handoffModeEnabled, isTrue);
+  });
 }
