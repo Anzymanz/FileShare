@@ -55,6 +55,8 @@ const int _maxConcurrentInboundClients = 64;
 const int _maxConcurrentTransfersPerPeer = 3;
 const int _defaultTransferRateLimitMBps = 50;
 const int _defaultGlobalRateLimitMBps = 200;
+const int _defaultRoomKeyExpiryMinutes = 0;
+const int _maxRoomKeyExpiryMinutes = 24 * 60;
 const int _dragCacheMaxBytes = 2 * 1024 * 1024 * 1024; // 2 GiB
 const Duration _dragCacheMaxAge = Duration(days: 7);
 const Duration _housekeepingInterval = Duration(minutes: 15);
@@ -937,6 +939,42 @@ int _clampRateLimitMBps(Object? raw, int fallback) {
   return parsed.clamp(1, 5000);
 }
 
+int _clampRoomKeyExpiryMinutes(Object? raw, int fallback) {
+  final parsed = (raw is num) ? raw.toInt() : int.tryParse('$raw');
+  if (parsed == null) return fallback;
+  return parsed.clamp(0, _maxRoomKeyExpiryMinutes);
+}
+
+String roomKeyExpiryOptionLabel(int minutes) {
+  if (minutes <= 0) return 'Off';
+  if (minutes % 60 == 0) {
+    final hours = minutes ~/ 60;
+    return '$hours h';
+  }
+  return '$minutes min';
+}
+
+String describeRoomKeyExpiryStatus({
+  required String sharedRoomKey,
+  required int expiryMinutes,
+  required DateTime? expiresAt,
+  DateTime? now,
+}) {
+  if (sharedRoomKey.trim().isEmpty) return 'No room key set.';
+  if (expiryMinutes <= 0 || expiresAt == null) {
+    return 'Room key does not expire in this session.';
+  }
+  final stamp = now ?? DateTime.now();
+  final remainingSeconds = expiresAt.difference(stamp).inSeconds;
+  if (remainingSeconds <= 0) return 'Room key expiring now.';
+  final remainingMinutes = max(1, (remainingSeconds / 60).ceil());
+  if (remainingMinutes >= 60 && remainingMinutes % 60 == 0) {
+    final hours = remainingMinutes ~/ 60;
+    return 'Room key expires in about $hours h.';
+  }
+  return 'Room key expires in about $remainingMinutes min.';
+}
+
 String? normalizeSha256Hex(Object? raw) {
   if (raw is! String) return null;
   final value = raw.trim().toLowerCase();
@@ -1074,6 +1112,7 @@ class _MyAppState extends State<MyApp> {
   late bool handoffModeEnabled;
   late String roomChannel;
   late String sharedRoomKey;
+  late int roomKeyExpiryMinutes;
   late String peerAllowlist;
   late String peerBlocklist;
   late int transferRateLimitMBps;
@@ -1101,6 +1140,7 @@ class _MyAppState extends State<MyApp> {
     handoffModeEnabled = widget.initialSettings.handoffModeEnabled;
     roomChannel = widget.initialSettings.roomChannel;
     sharedRoomKey = widget.initialSettings.sharedRoomKey;
+    roomKeyExpiryMinutes = widget.initialSettings.roomKeyExpiryMinutes;
     peerAllowlist = widget.initialSettings.peerAllowlist;
     peerBlocklist = widget.initialSettings.peerBlocklist;
     transferRateLimitMBps = widget.initialSettings.transferRateLimitMBps;
@@ -1126,6 +1166,7 @@ class _MyAppState extends State<MyApp> {
         handoffModeEnabled: handoffModeEnabled,
         roomChannel: roomChannel,
         sharedRoomKey: sharedRoomKey,
+        roomKeyExpiryMinutes: roomKeyExpiryMinutes,
         peerAllowlist: peerAllowlist,
         peerBlocklist: peerBlocklist,
         transferRateLimitMBps: transferRateLimitMBps,
@@ -1174,6 +1215,7 @@ class _MyAppState extends State<MyApp> {
         startInTrayRequested: widget.startInTrayRequested,
         initialRoomChannel: roomChannel,
         initialSharedRoomKey: sharedRoomKey,
+        initialRoomKeyExpiryMinutes: roomKeyExpiryMinutes,
         initialPeerAllowlist: peerAllowlist,
         initialPeerBlocklist: peerBlocklist,
         initialTransferRateLimitMBps: transferRateLimitMBps,
@@ -1226,6 +1268,10 @@ class _MyAppState extends State<MyApp> {
         },
         onSharedRoomKeyChanged: (value) {
           setState(() => sharedRoomKey = value);
+          unawaited(_persistSettings());
+        },
+        onRoomKeyExpiryMinutesChanged: (value) {
+          setState(() => roomKeyExpiryMinutes = value);
           unawaited(_persistSettings());
         },
         onPeerAllowlistChanged: (value) {
@@ -1284,6 +1330,7 @@ class Home extends StatefulWidget {
     required this.startInTrayRequested,
     required this.initialRoomChannel,
     required this.initialSharedRoomKey,
+    required this.initialRoomKeyExpiryMinutes,
     required this.initialPeerAllowlist,
     required this.initialPeerBlocklist,
     required this.initialTransferRateLimitMBps,
@@ -1305,6 +1352,7 @@ class Home extends StatefulWidget {
     required this.onHandoffModeChanged,
     required this.onRoomChannelChanged,
     required this.onSharedRoomKeyChanged,
+    required this.onRoomKeyExpiryMinutesChanged,
     required this.onPeerAllowlistChanged,
     required this.onPeerBlocklistChanged,
     required this.onTransferRateLimitMBpsChanged,
@@ -1328,6 +1376,7 @@ class Home extends StatefulWidget {
   final bool startInTrayRequested;
   final String initialRoomChannel;
   final String initialSharedRoomKey;
+  final int initialRoomKeyExpiryMinutes;
   final String initialPeerAllowlist;
   final String initialPeerBlocklist;
   final int initialTransferRateLimitMBps;
@@ -1349,6 +1398,7 @@ class Home extends StatefulWidget {
   final ValueChanged<bool> onHandoffModeChanged;
   final ValueChanged<String> onRoomChannelChanged;
   final ValueChanged<String> onSharedRoomKeyChanged;
+  final ValueChanged<int> onRoomKeyExpiryMinutesChanged;
   final ValueChanged<String> onPeerAllowlistChanged;
   final ValueChanged<String> onPeerBlocklistChanged;
   final ValueChanged<int> onTransferRateLimitMBpsChanged;
@@ -1384,6 +1434,7 @@ class _HomeState extends State<Home>
   bool _handoffModeEnabled = false;
   String _roomChannel = '';
   String _sharedRoomKey = '';
+  int _roomKeyExpiryMinutes = _defaultRoomKeyExpiryMinutes;
   String _peerAllowlist = '';
   String _peerBlocklist = '';
   int _transferRateLimitMBps = _defaultTransferRateLimitMBps;
@@ -1409,8 +1460,10 @@ class _HomeState extends State<Home>
   bool _isHiddenToTray = false;
   bool _isQuitting = false;
   String? _lastDownloadDirectory;
+  DateTime? _roomKeyExpiresAt;
   late final TextEditingController _searchController;
   Timer? _flashTimer;
+  Timer? _roomKeyExpiryTimer;
   Timer? _windowSaveDebounce;
   late final AnimationController _shakeController;
   late final Animation<double> _shakeProgress;
@@ -1428,6 +1481,10 @@ class _HomeState extends State<Home>
     _roomChannel = widget.initialRoomChannel;
     _soundOnNudge = widget.initialSoundOnNudge;
     _sharedRoomKey = widget.initialSharedRoomKey;
+    _roomKeyExpiryMinutes = _clampRoomKeyExpiryMinutes(
+      widget.initialRoomKeyExpiryMinutes,
+      _defaultRoomKeyExpiryMinutes,
+    );
     _peerAllowlist = widget.initialPeerAllowlist;
     _peerBlocklist = widget.initialPeerBlocklist;
     _transferRateLimitMBps = widget.initialTransferRateLimitMBps;
@@ -1442,6 +1499,7 @@ class _HomeState extends State<Home>
     _searchController = TextEditingController();
     c.setRoomChannel(_roomChannel);
     c.setSharedRoomKey(_sharedRoomKey);
+    _rearmRoomKeyExpiryTimer();
     c.setTrustLists(
       allowlist: parseTrustListInput(_peerAllowlist),
       blocklist: parseTrustListInput(_peerBlocklist),
@@ -1490,6 +1548,34 @@ class _HomeState extends State<Home>
         unawaited(_hideToTray(force: true));
       });
     }
+  }
+
+  void _rearmRoomKeyExpiryTimer() {
+    _roomKeyExpiryTimer?.cancel();
+    _roomKeyExpiryTimer = null;
+    _roomKeyExpiresAt = null;
+    if (_sharedRoomKey.isEmpty || _roomKeyExpiryMinutes <= 0) return;
+    _roomKeyExpiresAt = DateTime.now().add(
+      Duration(minutes: _roomKeyExpiryMinutes),
+    );
+    _roomKeyExpiryTimer = Timer(
+      Duration(minutes: _roomKeyExpiryMinutes),
+      _expireRoomKey,
+    );
+  }
+
+  void _expireRoomKey() {
+    if (!mounted || _sharedRoomKey.isEmpty) return;
+    setState(() {
+      _sharedRoomKey = '';
+      _roomKeyExpiresAt = null;
+      _roomKeyExpiryTimer = null;
+    });
+    c.setSharedRoomKey('');
+    widget.onSharedRoomKeyChanged('');
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Room key expired and was cleared.')),
+    );
   }
 
   bool _isFavorite(ShareItem item) => _favoriteKeys.contains(item.key);
@@ -2512,6 +2598,7 @@ class _HomeState extends State<Home>
     unawaited(_nudgeAudioPlayer.dispose());
     windowManager.removeListener(this);
     _flashTimer?.cancel();
+    _roomKeyExpiryTimer?.cancel();
     _windowSaveDebounce?.cancel();
     _shakeController.dispose();
     unawaited(_saveWindowNow());
@@ -2849,6 +2936,7 @@ class _HomeState extends State<Home>
     bool profilingEnabled = c.latencyProfilingEnabled;
     const transferRateOptions = <int>[5, 10, 25, 50, 100, 200, 500, 1000];
     const globalRateOptions = <int>[10, 25, 50, 100, 200, 500, 1000, 2000];
+    const roomKeyExpiryOptions = <int>[0, 5, 15, 30, 60, 120, 240, 480, 1440];
     final transferOptions = <int>{
       ...transferRateOptions,
       _transferRateLimitMBps,
@@ -2856,6 +2944,10 @@ class _HomeState extends State<Home>
     final globalOptions = <int>{
       ...globalRateOptions,
       _globalRateLimitMBps,
+    }.toList()..sort();
+    final roomKeyExpiryValues = <int>{
+      ...roomKeyExpiryOptions,
+      _roomKeyExpiryMinutes,
     }.toList()..sort();
     final latencySamples = c.peerFirstSyncLatency.entries.toList(
       growable: false,
@@ -2915,10 +3007,50 @@ class _HomeState extends State<Home>
                     ),
                     onChanged: (value) {
                       final normalized = value.trim();
-                      _sharedRoomKey = normalized;
-                      c.setSharedRoomKey(normalized);
+                      setDialogState(() {
+                        _sharedRoomKey = normalized;
+                        c.setSharedRoomKey(normalized);
+                        _rearmRoomKeyExpiryTimer();
+                      });
                       widget.onSharedRoomKeyChanged(normalized);
                     },
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      const Text('Room key expiry:'),
+                      const SizedBox(width: 8),
+                      DropdownButton<int>(
+                        value: _roomKeyExpiryMinutes,
+                        items: roomKeyExpiryValues
+                            .map(
+                              (minutes) => DropdownMenuItem<int>(
+                                value: minutes,
+                                child: Text(roomKeyExpiryOptionLabel(minutes)),
+                              ),
+                            )
+                            .toList(growable: false),
+                        onChanged: (value) {
+                          if (value == null) return;
+                          final normalized = _clampRoomKeyExpiryMinutes(
+                            value,
+                            _defaultRoomKeyExpiryMinutes,
+                          );
+                          setDialogState(() {
+                            _roomKeyExpiryMinutes = normalized;
+                            _rearmRoomKeyExpiryTimer();
+                          });
+                          widget.onRoomKeyExpiryMinutesChanged(normalized);
+                        },
+                      ),
+                    ],
+                  ),
+                  Text(
+                    describeRoomKeyExpiryStatus(
+                      sharedRoomKey: _sharedRoomKey,
+                      expiryMinutes: _roomKeyExpiryMinutes,
+                      expiresAt: _roomKeyExpiresAt,
+                    ),
                   ),
                   const SizedBox(height: 8),
                   const Text('Peer Trust (optional)'),
@@ -8878,6 +9010,7 @@ class AppSettings {
     this.handoffModeEnabled = false,
     this.roomChannel = '',
     this.sharedRoomKey = '',
+    this.roomKeyExpiryMinutes = _defaultRoomKeyExpiryMinutes,
     this.peerAllowlist = '',
     this.peerBlocklist = '',
     this.transferRateLimitMBps = _defaultTransferRateLimitMBps,
@@ -8900,6 +9033,7 @@ class AppSettings {
   final bool handoffModeEnabled;
   final String roomChannel;
   final String sharedRoomKey;
+  final int roomKeyExpiryMinutes;
   final String peerAllowlist;
   final String peerBlocklist;
   final int transferRateLimitMBps;
@@ -8922,6 +9056,7 @@ class AppSettings {
     'handoffModeEnabled': handoffModeEnabled,
     'roomChannel': roomChannel,
     'sharedRoomKey': sharedRoomKey,
+    'roomKeyExpiryMinutes': roomKeyExpiryMinutes,
     'peerAllowlist': peerAllowlist,
     'peerBlocklist': peerBlocklist,
     'transferRateLimitMBps': transferRateLimitMBps,
@@ -8950,6 +9085,10 @@ class AppSettings {
       handoffModeEnabled: json['handoffModeEnabled'] == true,
       roomChannel: normalizeRoomChannel((json['roomChannel'] as String? ?? '')),
       sharedRoomKey: (json['sharedRoomKey'] as String? ?? '').trim(),
+      roomKeyExpiryMinutes: _clampRoomKeyExpiryMinutes(
+        json['roomKeyExpiryMinutes'],
+        _defaultRoomKeyExpiryMinutes,
+      ),
       peerAllowlist: (json['peerAllowlist'] as String? ?? ''),
       peerBlocklist: (json['peerBlocklist'] as String? ?? ''),
       transferRateLimitMBps: _clampRateLimitMBps(

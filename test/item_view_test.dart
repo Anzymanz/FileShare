@@ -383,4 +383,38 @@ void main() {
     ]);
     expect(parsed, [r'C:\Temp\a.txt', r'C:\Temp\b.txt']);
   });
+
+  test('room key expiry labels and status text are stable', () {
+    expect(roomKeyExpiryOptionLabel(0), 'Off');
+    expect(roomKeyExpiryOptionLabel(15), '15 min');
+    expect(roomKeyExpiryOptionLabel(120), '2 h');
+
+    expect(
+      describeRoomKeyExpiryStatus(
+        sharedRoomKey: '',
+        expiryMinutes: 15,
+        expiresAt: DateTime.parse('2026-02-20T10:15:00Z'),
+        now: DateTime.parse('2026-02-20T10:00:00Z'),
+      ),
+      'No room key set.',
+    );
+    expect(
+      describeRoomKeyExpiryStatus(
+        sharedRoomKey: 'abc',
+        expiryMinutes: 0,
+        expiresAt: null,
+        now: DateTime.parse('2026-02-20T10:00:00Z'),
+      ),
+      'Room key does not expire in this session.',
+    );
+    expect(
+      describeRoomKeyExpiryStatus(
+        sharedRoomKey: 'abc',
+        expiryMinutes: 15,
+        expiresAt: DateTime.parse('2026-02-20T10:16:00Z'),
+        now: DateTime.parse('2026-02-20T10:00:01Z'),
+      ),
+      'Room key expires in about 16 min.',
+    );
+  });
 }
