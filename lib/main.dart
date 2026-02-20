@@ -160,6 +160,8 @@ enum DiscoveryProfile { highReliability, balanced, lowTraffic }
 
 enum DuplicateHandlingMode { rename, skip, replace }
 
+enum _SettingsPane { network, security, transfers, desktop, diagnostics }
+
 const Set<String> _imageExtensions = {
   '.png',
   '.jpg',
@@ -3415,6 +3417,588 @@ class _HomeState extends State<Home>
   }
 
   Future<void> _showSettings() async {
+    if (Platform.environment['FILESHARE_LEGACY_SETTINGS'] == '1') {
+      await _showSettingsLegacy();
+      return;
+    }
+    final openAdvanced = await _showSettingsModern();
+    if (openAdvanced && mounted) {
+      await _showSettingsLegacy();
+    }
+  }
+
+  Future<bool> _showSettingsModern() async {
+    final roomController = TextEditingController(text: _roomChannel);
+    final keyController = TextEditingController(text: _sharedRoomKey);
+    final relayController = TextEditingController(text: _relayEndpoints);
+    var activePane = _SettingsPane.network;
+    const transferRateOptions = <int>[5, 10, 25, 50, 100, 200, 500, 1000];
+    const globalRateOptions = <int>[10, 25, 50, 100, 200, 500, 1000, 2000];
+    const roomKeyExpiryOptions = <int>[0, 5, 15, 30, 60, 120, 240, 480, 1440];
+    final transferOptions = <int>{
+      ...transferRateOptions,
+      _transferRateLimitMBps,
+    }.toList()..sort();
+    final globalOptions = <int>{
+      ...globalRateOptions,
+      _globalRateLimitMBps,
+    }.toList()..sort();
+    final roomKeyExpiryValues = <int>{
+      ...roomKeyExpiryOptions,
+      _roomKeyExpiryMinutes,
+    }.toList()..sort();
+
+    String paneTitle(_SettingsPane pane) {
+      switch (pane) {
+        case _SettingsPane.network:
+          return 'Network';
+        case _SettingsPane.security:
+          return 'Security';
+        case _SettingsPane.transfers:
+          return 'Transfers';
+        case _SettingsPane.desktop:
+          return 'Desktop';
+        case _SettingsPane.diagnostics:
+          return 'Diagnostics';
+      }
+    }
+
+    IconData paneIcon(_SettingsPane pane) {
+      switch (pane) {
+        case _SettingsPane.network:
+          return Icons.lan_outlined;
+        case _SettingsPane.security:
+          return Icons.shield_outlined;
+        case _SettingsPane.transfers:
+          return Icons.speed_outlined;
+        case _SettingsPane.desktop:
+          return Icons.desktop_windows_outlined;
+        case _SettingsPane.diagnostics:
+          return Icons.bug_report_outlined;
+      }
+    }
+
+    final openAdvanced = await showDialog<bool>(
+      context: context,
+      builder: (_) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          final color = Theme.of(context).colorScheme;
+          final text = Theme.of(context).textTheme;
+          final peers = c.peers.values.toList()
+            ..sort((a, b) => a.name.compareTo(b.name));
+          final diagnostics =
+              c.networkDiagnostics.entries
+                  .where((e) => e.value > 0)
+                  .toList(growable: false)
+                ..sort((a, b) => a.key.compareTo(b.key));
+          final localIpSummary = c.localIps.isEmpty
+              ? 'Unavailable'
+              : c.localIps.join(', ');
+
+          Widget navButton(_SettingsPane pane) {
+            final selected = activePane == pane;
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Material(
+                color: selected
+                    ? color.primaryContainer.withValues(alpha: 0.9)
+                    : Colors.transparent,
+                borderRadius: BorderRadius.circular(12),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(12),
+                  onTap: () => setDialogState(() => activePane = pane),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 10,
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(
+                          paneIcon(pane),
+                          size: 18,
+                          color: selected
+                              ? color.onPrimaryContainer
+                              : color.onSurfaceVariant,
+                        ),
+                        const SizedBox(width: 10),
+                        Text(
+                          paneTitle(pane),
+                          style: text.titleSmall?.copyWith(
+                            color: selected ? color.onPrimaryContainer : null,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            );
+          }
+
+          Widget section({
+            required String title,
+            required List<Widget> children,
+            String? subtitle,
+          }) {
+            return Container(
+              margin: const EdgeInsets.only(bottom: 12),
+              padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+              decoration: BoxDecoration(
+                color: color.surfaceContainerHighest.withValues(alpha: 0.45),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(
+                  color: color.outlineVariant.withValues(alpha: 0.5),
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title, style: text.titleSmall),
+                  if (subtitle != null) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitle,
+                      style: text.bodySmall?.copyWith(
+                        color: color.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 8),
+                  ...children,
+                ],
+              ),
+            );
+          }
+
+          Widget paneBody() {
+            switch (activePane) {
+              case _SettingsPane.network:
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    section(
+                      title: 'This Device',
+                      children: [
+                        Text('Name: ${c.deviceName}'),
+                        Text('IP: $localIpSummary'),
+                        Text('Port: ${c.listenPort}'),
+                        Text('Peers online: ${c.connectedPeerCount}'),
+                      ],
+                    ),
+                    section(
+                      title: 'Room',
+                      subtitle: 'Keep peers in the same shared channel',
+                      children: [
+                        TextField(
+                          controller: roomController,
+                          decoration: const InputDecoration(
+                            labelText: 'Room channel',
+                            isDense: true,
+                          ),
+                          onChanged: (value) {
+                            final normalized = normalizeRoomChannel(value);
+                            _roomChannel = normalized;
+                            c.setRoomChannel(normalized);
+                            widget.onRoomChannelChanged(normalized);
+                          },
+                        ),
+                        const SizedBox(height: 8),
+                        TextField(
+                          controller: keyController,
+                          obscureText: true,
+                          decoration: const InputDecoration(
+                            labelText: 'Room key',
+                            isDense: true,
+                          ),
+                          onChanged: (value) {
+                            final normalized = value.trim();
+                            setDialogState(() {
+                              _sharedRoomKey = normalized;
+                              c.setSharedRoomKey(normalized);
+                              _rearmRoomKeyExpiryTimer();
+                            });
+                            widget.onSharedRoomKeyChanged(normalized);
+                          },
+                        ),
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            const Text('Key expiry'),
+                            const SizedBox(width: 10),
+                            DropdownButton<int>(
+                              value: _roomKeyExpiryMinutes,
+                              items: roomKeyExpiryValues
+                                  .map(
+                                    (m) => DropdownMenuItem<int>(
+                                      value: m,
+                                      child: Text(roomKeyExpiryOptionLabel(m)),
+                                    ),
+                                  )
+                                  .toList(growable: false),
+                              onChanged: (value) {
+                                if (value == null) return;
+                                final normalized = _clampRoomKeyExpiryMinutes(
+                                  value,
+                                  _defaultRoomKeyExpiryMinutes,
+                                );
+                                setDialogState(
+                                  () => _roomKeyExpiryMinutes = normalized,
+                                );
+                                _rearmRoomKeyExpiryTimer();
+                                widget.onRoomKeyExpiryMinutesChanged(
+                                  normalized,
+                                );
+                              },
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                    section(
+                      title: 'Peers',
+                      children: [
+                        if (peers.isEmpty) const Text('No peers connected'),
+                        for (final peer in peers.take(6))
+                          Text('- ${peer.name} (${peer.addr.address})'),
+                        const SizedBox(height: 8),
+                        FilledButton.tonal(
+                          onPressed: () => Navigator.pop(context, true),
+                          child: const Text('Open Advanced Network Tools'),
+                        ),
+                      ],
+                    ),
+                  ],
+                );
+              case _SettingsPane.security:
+                return section(
+                  title: 'Security',
+                  children: [
+                    SwitchListTile.adaptive(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('Require peer pairing'),
+                      subtitle: Text(
+                        'Pending: ${c.pendingPairingRequests.length}',
+                      ),
+                      value: _pairingRequired,
+                      onChanged: (value) {
+                        setDialogState(() => _pairingRequired = value);
+                        c.setPairingRequired(value);
+                        widget.onPairingRequiredChanged(value);
+                      },
+                    ),
+                    SwitchListTile.adaptive(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('Handoff mode'),
+                      subtitle: Text(
+                        'Pending: ${c.pendingHandoffRequests.length}',
+                      ),
+                      value: _handoffModeEnabled,
+                      onChanged: (value) {
+                        setDialogState(() => _handoffModeEnabled = value);
+                        c.setHandoffMode(value);
+                        widget.onHandoffModeChanged(value);
+                      },
+                    ),
+                    SwitchListTile.adaptive(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('Encrypt payload streams'),
+                      subtitle: Text(
+                        _sharedRoomKey.isEmpty
+                            ? 'Requires a room key'
+                            : 'Room key active',
+                      ),
+                      value: _payloadEncryptionEnabled,
+                      onChanged: (value) {
+                        setDialogState(() => _payloadEncryptionEnabled = value);
+                        c.setPayloadEncryptionEnabled(value);
+                        widget.onPayloadEncryptionEnabledChanged(value);
+                      },
+                    ),
+                    const SizedBox(height: 6),
+                    FilledButton.tonal(
+                      onPressed: () => Navigator.pop(context, true),
+                      child: const Text('Open Advanced Security Controls'),
+                    ),
+                  ],
+                );
+              case _SettingsPane.transfers:
+                return section(
+                  title: 'Transfers',
+                  children: [
+                    Row(
+                      children: [
+                        const Text('Duplicate files'),
+                        const SizedBox(width: 10),
+                        DropdownButton<DuplicateHandlingMode>(
+                          value: _duplicateHandlingMode,
+                          items: DuplicateHandlingMode.values
+                              .map(
+                                (mode) =>
+                                    DropdownMenuItem<DuplicateHandlingMode>(
+                                      value: mode,
+                                      child: Text(
+                                        duplicateHandlingModeLabel(mode),
+                                      ),
+                                    ),
+                              )
+                              .toList(growable: false),
+                          onChanged: (value) {
+                            if (value == null) return;
+                            setDialogState(
+                              () => _duplicateHandlingMode = value,
+                            );
+                            widget.onDuplicateHandlingModeChanged(value);
+                          },
+                        ),
+                      ],
+                    ),
+                    Row(
+                      children: [
+                        const Text('Per-transfer cap'),
+                        const SizedBox(width: 10),
+                        DropdownButton<int>(
+                          value: _transferRateLimitMBps,
+                          items: transferOptions
+                              .map(
+                                (v) => DropdownMenuItem<int>(
+                                  value: v,
+                                  child: Text('$v MB/s'),
+                                ),
+                              )
+                              .toList(growable: false),
+                          onChanged: (value) {
+                            if (value == null) return;
+                            final globalCap = max(_globalRateLimitMBps, value);
+                            setDialogState(() {
+                              _transferRateLimitMBps = value;
+                              _globalRateLimitMBps = globalCap;
+                            });
+                            c.setBandwidthCapsMBps(
+                              transferRateLimitMBps: value,
+                              globalRateLimitMBps: globalCap,
+                            );
+                            widget.onTransferRateLimitMBpsChanged(value);
+                            widget.onGlobalRateLimitMBpsChanged(globalCap);
+                          },
+                        ),
+                      ],
+                    ),
+                    Row(
+                      children: [
+                        const Text('Global cap'),
+                        const SizedBox(width: 10),
+                        DropdownButton<int>(
+                          value: _globalRateLimitMBps,
+                          items: globalOptions
+                              .map(
+                                (v) => DropdownMenuItem<int>(
+                                  value: v,
+                                  child: Text('$v MB/s'),
+                                ),
+                              )
+                              .toList(growable: false),
+                          onChanged: (value) {
+                            if (value == null) return;
+                            final globalCap = max(
+                              value,
+                              _transferRateLimitMBps,
+                            );
+                            setDialogState(
+                              () => _globalRateLimitMBps = globalCap,
+                            );
+                            c.setBandwidthCapsMBps(
+                              transferRateLimitMBps: _transferRateLimitMBps,
+                              globalRateLimitMBps: globalCap,
+                            );
+                            widget.onGlobalRateLimitMBpsChanged(globalCap);
+                          },
+                        ),
+                      ],
+                    ),
+                  ],
+                );
+              case _SettingsPane.desktop:
+                return section(
+                  title: 'Desktop',
+                  children: [
+                    SwitchListTile.adaptive(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('Sound on nudge'),
+                      value: _soundOnNudge,
+                      onChanged: (value) {
+                        setDialogState(() => _soundOnNudge = value);
+                        widget.onSoundOnNudgeChanged(value);
+                      },
+                    ),
+                    SwitchListTile.adaptive(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('Drag-out compatibility mode'),
+                      value: _dragOutCompatibilityMode,
+                      onChanged: (value) {
+                        setDialogState(() => _dragOutCompatibilityMode = value);
+                        c.setDragOutCompatibilityMode(value);
+                        widget.onDragOutCompatibilityModeChanged(value);
+                      },
+                    ),
+                    SwitchListTile.adaptive(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('Relay mode (experimental)'),
+                      value: _relayModeEnabled,
+                      onChanged: (value) {
+                        setDialogState(() => _relayModeEnabled = value);
+                        c.setRelayConfig(
+                          enabled: value,
+                          endpoints: parseRelayEndpointInput(
+                            relayController.text,
+                          ),
+                        );
+                        widget.onRelayModeChanged(value);
+                      },
+                    ),
+                    if (_relayModeEnabled)
+                      TextField(
+                        controller: relayController,
+                        minLines: 2,
+                        maxLines: 3,
+                        decoration: const InputDecoration(
+                          labelText: 'Relay endpoints',
+                          isDense: true,
+                        ),
+                      ),
+                    const SizedBox(height: 8),
+                    FilledButton.tonal(
+                      onPressed: () => Navigator.pop(context, true),
+                      child: const Text('Open Advanced Desktop Controls'),
+                    ),
+                  ],
+                );
+              case _SettingsPane.diagnostics:
+                return section(
+                  title: 'Diagnostics',
+                  children: [
+                    TextButton(
+                      onPressed: () => unawaited(_showDiagnosticsWizard()),
+                      child: const Text('Open Troubleshoot Wizard'),
+                    ),
+                    TextButton(
+                      onPressed: () => unawaited(c.checkForUpdates()),
+                      child: const Text('Check for Updates'),
+                    ),
+                    TextButton(
+                      onPressed: () => unawaited(_exportDiagnosticsBundle()),
+                      child: const Text('Export Diagnostics'),
+                    ),
+                    TextButton(
+                      onPressed: () => unawaited(_exportAuditLogBundle()),
+                      child: const Text('Export Audit Log'),
+                    ),
+                    if (diagnostics.isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      for (final entry in diagnostics.take(12))
+                        Text('- ${entry.key}: ${entry.value}'),
+                    ],
+                  ],
+                );
+            }
+          }
+
+          return Dialog(
+            insetPadding: const EdgeInsets.symmetric(
+              horizontal: 20,
+              vertical: 14,
+            ),
+            backgroundColor: Colors.transparent,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 920, maxHeight: 680),
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: color.surface,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: color.outlineVariant.withValues(alpha: 0.55),
+                  ),
+                ),
+                child: Column(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 14, 10, 10),
+                      child: Row(
+                        children: [
+                          Icon(paneIcon(activePane), color: color.primary),
+                          const SizedBox(width: 8),
+                          Text(
+                            'Settings',
+                            style: text.titleLarge?.copyWith(
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          const Spacer(),
+                          IconButton(
+                            tooltip: 'Close',
+                            onPressed: () => Navigator.pop(context, false),
+                            icon: const Icon(Icons.close),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const Divider(height: 1),
+                    Expanded(
+                      child: Row(
+                        children: [
+                          SizedBox(
+                            width: 220,
+                            child: Padding(
+                              padding: const EdgeInsets.all(12),
+                              child: Column(
+                                children: [
+                                  navButton(_SettingsPane.network),
+                                  navButton(_SettingsPane.security),
+                                  navButton(_SettingsPane.transfers),
+                                  navButton(_SettingsPane.desktop),
+                                  navButton(_SettingsPane.diagnostics),
+                                  const Spacer(),
+                                  FilledButton.tonal(
+                                    onPressed: () =>
+                                        Navigator.pop(context, true),
+                                    child: const Text('Advanced...'),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                          const VerticalDivider(width: 1),
+                          Expanded(
+                            child: Padding(
+                              padding: const EdgeInsets.all(14),
+                              child: SingleChildScrollView(child: paneBody()),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+
+    roomController.dispose();
+    keyController.dispose();
+    relayController.dispose();
+    return openAdvanced == true;
+  }
+
+  Future<void> _showSettingsLegacy() async {
     final peers = c.peers.values.toList()
       ..sort((a, b) => a.name.compareTo(b.name));
     final incompatible = c.incompatiblePeers.entries.toList()
