@@ -29,6 +29,8 @@ const String _latestReleaseApiUrl =
     'https://api.github.com/repos/Anzymanz/FileShare/releases/latest';
 const String _latestReleasePageUrl =
     'https://github.com/Anzymanz/FileShare/releases/latest';
+const String _windowsRunKey = r'HKCU\Software\Microsoft\Windows\CurrentVersion\Run';
+const String _windowsRunValueName = 'FileShare';
 const String _simLatencyEnv = 'FILESHARE_SIM_LATENCY_MS';
 const String _simDropEnv = 'FILESHARE_SIM_DROP_PERCENT';
 const int _protocolMajor = 1;
@@ -310,7 +312,24 @@ List<ShareItem> computeVisibleItems({
   return filtered;
 }
 
-Future<void> main() async {
+bool _isValidStartupExecutable(String executablePath) {
+  final fileName = p.basename(executablePath).toLowerCase();
+  return fileName == 'fileshare.exe';
+}
+
+String buildWindowsStartupCommand({
+  required String executablePath,
+  required bool startInTray,
+}) {
+  final quoted = '"$executablePath"';
+  if (!startInTray) return quoted;
+  return '$quoted --start-in-tray';
+}
+
+Future<void> main(List<String> args) async {
+  final startInTrayRequested = args.any(
+    (arg) => arg.trim().toLowerCase() == '--start-in-tray',
+  );
   WidgetsFlutterBinding.ensureInitialized();
   await _diagnostics.initialize();
   FlutterError.onError = (details) {
@@ -335,7 +354,12 @@ Future<void> main() async {
       ),
     );
 
-    runApp(MyApp(initialSettings: savedAppSettings));
+    runApp(
+      MyApp(
+        initialSettings: savedAppSettings,
+        startInTrayRequested: startInTrayRequested,
+      ),
+    );
     _diagnostics.info('Application started');
     unawaited(_restoreWindow(savedWindowState));
   }, (error, stack) {
@@ -366,9 +390,14 @@ Future<void> _restoreWindow(_WindowState? saved) async {
 }
 
 class MyApp extends StatefulWidget {
-  const MyApp({super.key, required this.initialSettings});
+  const MyApp({
+    super.key,
+    required this.initialSettings,
+    required this.startInTrayRequested,
+  });
 
   final AppSettings initialSettings;
+  final bool startInTrayRequested;
 
   @override
   State<MyApp> createState() => _MyAppState();
@@ -379,6 +408,8 @@ class _MyAppState extends State<MyApp> {
   late int themeIndex;
   late bool soundOnNudge;
   late bool minimizeToTray;
+  late bool startWithWindows;
+  late bool startInTrayOnLaunch;
   late String sharedRoomKey;
   late bool autoUpdateChecks;
 
@@ -392,6 +423,8 @@ class _MyAppState extends State<MyApp> {
     );
     soundOnNudge = widget.initialSettings.soundOnNudge;
     minimizeToTray = widget.initialSettings.minimizeToTray;
+    startWithWindows = widget.initialSettings.startWithWindows;
+    startInTrayOnLaunch = widget.initialSettings.startInTrayOnLaunch;
     sharedRoomKey = widget.initialSettings.sharedRoomKey;
     autoUpdateChecks = widget.initialSettings.autoUpdateChecks;
   }
@@ -403,6 +436,8 @@ class _MyAppState extends State<MyApp> {
         themeIndex: themeIndex,
         soundOnNudge: soundOnNudge,
         minimizeToTray: minimizeToTray,
+        startWithWindows: startWithWindows,
+        startInTrayOnLaunch: startInTrayOnLaunch,
         sharedRoomKey: sharedRoomKey,
         autoUpdateChecks: autoUpdateChecks,
       ),
@@ -436,6 +471,9 @@ class _MyAppState extends State<MyApp> {
         themeIndex: themeIndex,
         initialSoundOnNudge: soundOnNudge,
         initialMinimizeToTray: minimizeToTray,
+        initialStartWithWindows: startWithWindows,
+        initialStartInTrayOnLaunch: startInTrayOnLaunch,
+        startInTrayRequested: widget.startInTrayRequested,
         initialSharedRoomKey: sharedRoomKey,
         initialAutoUpdateChecks: autoUpdateChecks,
         onToggleTheme: () {
@@ -452,6 +490,14 @@ class _MyAppState extends State<MyApp> {
         },
         onMinimizeToTrayChanged: (value) {
           setState(() => minimizeToTray = value);
+          unawaited(_persistSettings());
+        },
+        onStartWithWindowsChanged: (value) {
+          setState(() => startWithWindows = value);
+          unawaited(_persistSettings());
+        },
+        onStartInTrayOnLaunchChanged: (value) {
+          setState(() => startInTrayOnLaunch = value);
           unawaited(_persistSettings());
         },
         onSharedRoomKeyChanged: (value) {
@@ -474,12 +520,17 @@ class Home extends StatefulWidget {
     required this.themeIndex,
     required this.initialSoundOnNudge,
     required this.initialMinimizeToTray,
+    required this.initialStartWithWindows,
+    required this.initialStartInTrayOnLaunch,
+    required this.startInTrayRequested,
     required this.initialSharedRoomKey,
     required this.initialAutoUpdateChecks,
     required this.onToggleTheme,
     required this.onSelectTheme,
     required this.onSoundOnNudgeChanged,
     required this.onMinimizeToTrayChanged,
+    required this.onStartWithWindowsChanged,
+    required this.onStartInTrayOnLaunchChanged,
     required this.onSharedRoomKeyChanged,
     required this.onAutoUpdateChecksChanged,
   });
@@ -488,12 +539,17 @@ class Home extends StatefulWidget {
   final int themeIndex;
   final bool initialSoundOnNudge;
   final bool initialMinimizeToTray;
+  final bool initialStartWithWindows;
+  final bool initialStartInTrayOnLaunch;
+  final bool startInTrayRequested;
   final String initialSharedRoomKey;
   final bool initialAutoUpdateChecks;
   final VoidCallback onToggleTheme;
   final ValueChanged<int> onSelectTheme;
   final ValueChanged<bool> onSoundOnNudgeChanged;
   final ValueChanged<bool> onMinimizeToTrayChanged;
+  final ValueChanged<bool> onStartWithWindowsChanged;
+  final ValueChanged<bool> onStartInTrayOnLaunchChanged;
   final ValueChanged<String> onSharedRoomKeyChanged;
   final ValueChanged<bool> onAutoUpdateChecksChanged;
 
@@ -515,6 +571,8 @@ class _HomeState extends State<Home>
   bool _flash = false;
   bool _soundOnNudge = false;
   bool _minimizeToTray = false;
+  bool _startWithWindows = false;
+  bool _startInTrayOnLaunch = false;
   String _sharedRoomKey = '';
   bool _autoUpdateChecks = false;
   ItemSourceFilter _sourceFilter = ItemSourceFilter.all;
@@ -537,6 +595,8 @@ class _HomeState extends State<Home>
   void initState() {
     super.initState();
     _minimizeToTray = widget.initialMinimizeToTray;
+    _startWithWindows = widget.initialStartWithWindows;
+    _startInTrayOnLaunch = widget.initialStartInTrayOnLaunch;
     _soundOnNudge = widget.initialSoundOnNudge;
     _sharedRoomKey = widget.initialSharedRoomKey;
     _autoUpdateChecks = widget.initialAutoUpdateChecks;
@@ -558,6 +618,11 @@ class _HomeState extends State<Home>
     unawaited(_initDesktopIntegrations());
     unawaited(_initFocus());
     unawaited(c.start());
+    if (widget.startInTrayRequested && Platform.isWindows && !_isTest) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        unawaited(_hideToTray(force: true));
+      });
+    }
   }
 
   Future<void> _initDesktopIntegrations() async {
@@ -977,10 +1042,11 @@ class _HomeState extends State<Home>
   }
 
   Future<void> _hideToTray({
+    bool force = false,
     String? notificationTitle,
     String? notificationBody,
   }) async {
-    if (!_minimizeToTray || !Platform.isWindows) return;
+    if ((!_minimizeToTray && !force) || !Platform.isWindows) return;
     if (_isHiddenToTray) return;
     try {
       await _ensureTrayInitialized();
@@ -1044,6 +1110,57 @@ class _HomeState extends State<Home>
       await _restoreFromTray();
     }
     await _disposeTray();
+  }
+
+  Future<String> _applyWindowsStartup({
+    required bool enabled,
+    required bool startInTray,
+  }) async {
+    if (!Platform.isWindows) {
+      return 'Startup integration is Windows-only';
+    }
+    final exePath = Platform.resolvedExecutable;
+    if (!_isValidStartupExecutable(exePath)) {
+      return 'Startup registration requires running FileShare installer build';
+    }
+    if (!enabled) {
+      final result = await Process.run('reg', [
+        'delete',
+        _windowsRunKey,
+        '/v',
+        _windowsRunValueName,
+        '/f',
+      ]);
+      final stderr = (result.stderr ?? '').toString().toLowerCase();
+      if (result.exitCode != 0 &&
+          !stderr.contains('unable to find') &&
+          !stderr.contains('cannot find')) {
+        return 'Failed to disable startup: ${result.stderr}';
+      }
+      return 'Start with Windows disabled';
+    }
+
+    final command = buildWindowsStartupCommand(
+      executablePath: exePath,
+      startInTray: startInTray,
+    );
+    final result = await Process.run('reg', [
+      'add',
+      _windowsRunKey,
+      '/v',
+      _windowsRunValueName,
+      '/t',
+      'REG_SZ',
+      '/d',
+      command,
+      '/f',
+    ]);
+    if (result.exitCode != 0) {
+      return 'Failed to enable startup: ${result.stderr}';
+    }
+    return startInTray
+        ? 'Start with Windows enabled (tray launch)'
+        : 'Start with Windows enabled';
   }
 
   Future<void> _quitApplication() async {
@@ -1339,6 +1456,8 @@ class _HomeState extends State<Home>
     bool sendingProbe = false;
     String? connectStatus;
     String? updateStatus;
+    String? startupStatus;
+    bool applyingStartup = false;
     bool checkingUpdates = false;
     String? exportStatus;
     bool exportingDiagnostics = false;
@@ -1402,6 +1521,58 @@ class _HomeState extends State<Home>
                       widget.onAutoUpdateChecksChanged(value);
                     },
                   ),
+                  SwitchListTile.adaptive(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Start with Windows'),
+                    subtitle: const Text('Register FileShare in user startup'),
+                    value: _startWithWindows,
+                    onChanged: applyingStartup
+                        ? null
+                        : (value) async {
+                            setDialogState(() => applyingStartup = true);
+                            final result = await _applyWindowsStartup(
+                              enabled: value,
+                              startInTray: value && _startInTrayOnLaunch,
+                            );
+                            if (!context.mounted) return;
+                            setDialogState(() {
+                              applyingStartup = false;
+                              startupStatus = result;
+                              _startWithWindows = value;
+                            });
+                            widget.onStartWithWindowsChanged(value);
+                          },
+                  ),
+                  SwitchListTile.adaptive(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Launch in tray'),
+                    subtitle: const Text(
+                      'When started from Windows startup, begin hidden in tray',
+                    ),
+                    value: _startInTrayOnLaunch,
+                    onChanged: (!_startWithWindows || applyingStartup)
+                        ? null
+                        : (value) async {
+                            setDialogState(() => applyingStartup = true);
+                            final result = await _applyWindowsStartup(
+                              enabled: true,
+                              startInTray: value,
+                            );
+                            if (!context.mounted) return;
+                            setDialogState(() {
+                              applyingStartup = false;
+                              startupStatus = result;
+                              _startInTrayOnLaunch = value;
+                            });
+                            widget.onStartInTrayOnLaunchChanged(value);
+                          },
+                  ),
+                  if (startupStatus != null) ...[
+                    const SizedBox(height: 4),
+                    Text(startupStatus!),
+                  ],
                   SwitchListTile.adaptive(
                     dense: true,
                     contentPadding: EdgeInsets.zero,
@@ -5085,6 +5256,8 @@ class AppSettings {
     required this.themeIndex,
     required this.soundOnNudge,
     this.minimizeToTray = false,
+    this.startWithWindows = false,
+    this.startInTrayOnLaunch = false,
     this.sharedRoomKey = '',
     this.autoUpdateChecks = false,
   });
@@ -5093,6 +5266,8 @@ class AppSettings {
   final int themeIndex;
   final bool soundOnNudge;
   final bool minimizeToTray;
+  final bool startWithWindows;
+  final bool startInTrayOnLaunch;
   final String sharedRoomKey;
   final bool autoUpdateChecks;
 
@@ -5101,6 +5276,8 @@ class AppSettings {
     'themeIndex': themeIndex,
     'soundOnNudge': soundOnNudge,
     'minimizeToTray': minimizeToTray,
+    'startWithWindows': startWithWindows,
+    'startInTrayOnLaunch': startInTrayOnLaunch,
     'sharedRoomKey': sharedRoomKey,
     'autoUpdateChecks': autoUpdateChecks,
   };
@@ -5111,6 +5288,8 @@ class AppSettings {
       themeIndex: (json['themeIndex'] as num?)?.toInt() ?? 0,
       soundOnNudge: json['soundOnNudge'] == true,
       minimizeToTray: json['minimizeToTray'] == true,
+      startWithWindows: json['startWithWindows'] == true,
+      startInTrayOnLaunch: json['startInTrayOnLaunch'] == true,
       sharedRoomKey: (json['sharedRoomKey'] as String? ?? '').trim(),
       autoUpdateChecks: json['autoUpdateChecks'] == true,
     );
