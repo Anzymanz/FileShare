@@ -828,6 +828,7 @@ class _HomeState extends State<Home>
   ItemLayoutMode _layoutMode = ItemLayoutMode.grid;
   double _iconSize = 64;
   Set<String> _favoriteKeys = <String>{};
+  Set<String> _selectedItemKeys = <String>{};
   final Map<String, DateTime> _itemFirstSeenAt = <String, DateTime>{};
   bool _trayInitialized = false;
   bool _isHiddenToTray = false;
@@ -897,6 +898,19 @@ class _HomeState extends State<Home>
     await _saveFavoriteKeys(next);
   }
 
+  void _toggleItemSelection(ShareItem item) {
+    final next = <String>{..._selectedItemKeys};
+    if (!next.add(item.key)) {
+      next.remove(item.key);
+    }
+    setState(() => _selectedItemKeys = next);
+  }
+
+  void _clearSelection() {
+    if (_selectedItemKeys.isEmpty) return;
+    setState(() => _selectedItemKeys = <String>{});
+  }
+
   Future<void> _initDesktopIntegrations() async {
     if (!Platform.isWindows) return;
     try {
@@ -920,6 +934,12 @@ class _HomeState extends State<Home>
       _itemFirstSeenAt.putIfAbsent(item.key, () => seenNow);
     }
     _itemFirstSeenAt.removeWhere((key, _) => !keys.contains(key));
+    if (_selectedItemKeys.isNotEmpty) {
+      final trimmed = _selectedItemKeys.where(keys.contains).toSet();
+      if (!_stringSetEquals(trimmed, _selectedItemKeys)) {
+        _selectedItemKeys = trimmed;
+      }
+    }
 
     final remoteItems = allItems.where((e) => !e.local).toList(growable: false);
     final remoteCount = remoteItems.length;
@@ -1148,6 +1168,87 @@ class _HomeState extends State<Home>
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text('Download all from $ownerName: ${parts.join(', ')}'),
+      ),
+    );
+  }
+
+  Future<void> _downloadSelectedRemote(List<ShareItem> remoteItems) async {
+    if (remoteItems.isEmpty) return;
+    final targetDirectory = await fs.getDirectoryPath(
+      initialDirectory: _lastDownloadDirectory,
+      confirmButtonText: 'Download Selected',
+    );
+    if (targetDirectory == null || targetDirectory.trim().isEmpty) return;
+    _lastDownloadDirectory = targetDirectory;
+
+    final sorted = remoteItems.toList(growable: false)
+      ..sort((a, b) {
+        final ownerOrder = a.owner.compareTo(b.owner);
+        if (ownerOrder != 0) return ownerOrder;
+        return a.rel.compareTo(b.rel);
+      });
+    var completed = 0;
+    var failed = 0;
+    var canceled = 0;
+    final reservedTargets = <String>{};
+    for (final item in sorted) {
+      final outputPath = _allocateBatchDownloadPath(
+        targetDirectory,
+        item,
+        reservedTargets,
+      );
+      try {
+        await c.downloadRemoteToPath(item, outputPath);
+        completed++;
+      } on _TransferCanceledException {
+        canceled++;
+        break;
+      } catch (_) {
+        failed++;
+      }
+    }
+    if (!mounted) return;
+    final parts = <String>[
+      '$completed downloaded',
+      if (failed > 0) '$failed failed',
+      if (canceled > 0) '$canceled canceled',
+    ];
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Download selected: ${parts.join(', ')}')),
+    );
+  }
+
+  void _removeSelectedLocal(List<ShareItem> localItems) {
+    if (localItems.isEmpty) return;
+    final nextSelection = <String>{..._selectedItemKeys};
+    for (final item in localItems) {
+      c.removeLocal(item.itemId);
+      nextSelection.remove(item.key);
+    }
+    if (!mounted) return;
+    setState(() => _selectedItemKeys = nextSelection);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          localItems.length == 1
+              ? 'Removed 1 local item'
+              : 'Removed ${localItems.length} local items',
+        ),
+      ),
+    );
+  }
+
+  void _nudgeSelectedOwners(Set<String> ownerIds) {
+    if (ownerIds.isEmpty) return;
+    c.sendNudgeToPeerIds(ownerIds);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          ownerIds.length == 1
+              ? 'Nudged 1 owner'
+              : 'Nudged ${ownerIds.length} owners',
+        ),
       ),
     );
   }
@@ -1549,6 +1650,10 @@ class _HomeState extends State<Home>
       sortMode: _sortMode,
       firstSeenByKey: _itemFirstSeenAt,
     );
+    final selection = summarizeSelectedItems(
+      allItems: allItems,
+      selectedKeys: _selectedItemKeys,
+    );
     return Scaffold(
       body: SafeArea(
         child: DropRegion(
@@ -1685,6 +1790,36 @@ class _HomeState extends State<Home>
                                     onShareClipboardText:
                                         _shareClipboardTextAsItem,
                                   ),
+                                  if (selection.all.isNotEmpty) ...[
+                                    const SizedBox(height: 8),
+                                    _BulkActionBar(
+                                      selectedCount: selection.all.length,
+                                      localCount: selection.local.length,
+                                      remoteCount: selection.remote.length,
+                                      ownerCount:
+                                          selection.remoteOwnerIds.length,
+                                      onClear: _clearSelection,
+                                      onDownloadSelected:
+                                          selection.remote.isEmpty
+                                          ? null
+                                          : () => unawaited(
+                                              _downloadSelectedRemote(
+                                                selection.remote,
+                                              ),
+                                            ),
+                                      onRemoveSelected: selection.local.isEmpty
+                                          ? null
+                                          : () => _removeSelectedLocal(
+                                              selection.local,
+                                            ),
+                                      onNudgeOwners:
+                                          selection.remoteOwnerIds.isEmpty
+                                          ? null
+                                          : () => _nudgeSelectedOwners(
+                                              selection.remoteOwnerIds,
+                                            ),
+                                    ),
+                                  ],
                                   const SizedBox(height: 8),
                                   Expanded(
                                     child: visibleItems.isEmpty
@@ -1707,6 +1842,9 @@ class _HomeState extends State<Home>
                                             onDownload: _downloadRemoteItem,
                                             onDownloadAllFromOwner:
                                                 _downloadAllFromOwner,
+                                            selectedKeys: _selectedItemKeys,
+                                            onToggleSelection:
+                                                _toggleItemSelection,
                                             showGrid: _pointerHovering,
                                             layoutMode: _layoutMode,
                                             iconSize: _iconSize,
@@ -2798,6 +2936,70 @@ class _ToolbarDropdown<T> extends StatelessWidget {
   }
 }
 
+class _BulkActionBar extends StatelessWidget {
+  const _BulkActionBar({
+    required this.selectedCount,
+    required this.localCount,
+    required this.remoteCount,
+    required this.ownerCount,
+    required this.onClear,
+    required this.onDownloadSelected,
+    required this.onRemoveSelected,
+    required this.onNudgeOwners,
+  });
+
+  final int selectedCount;
+  final int localCount;
+  final int remoteCount;
+  final int ownerCount;
+  final VoidCallback onClear;
+  final VoidCallback? onDownloadSelected;
+  final VoidCallback? onRemoveSelected;
+  final VoidCallback? onNudgeOwners;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: theme.colorScheme.outlineVariant.withValues(alpha: 0.6),
+        ),
+      ),
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          Text(
+            '$selectedCount selected ($localCount local, $remoteCount remote)',
+            style: theme.textTheme.bodySmall,
+          ),
+          OutlinedButton.icon(
+            onPressed: onDownloadSelected,
+            icon: const Icon(Icons.download, size: 16),
+            label: const Text('Download selected'),
+          ),
+          OutlinedButton.icon(
+            onPressed: onRemoveSelected,
+            icon: const Icon(Icons.delete_outline, size: 16),
+            label: const Text('Remove local'),
+          ),
+          OutlinedButton.icon(
+            onPressed: onNudgeOwners,
+            icon: const Icon(Icons.notifications_active_outlined, size: 16),
+            label: Text(ownerCount == 1 ? 'Nudge owner' : 'Nudge owners'),
+          ),
+          TextButton(onPressed: onClear, child: const Text('Clear')),
+        ],
+      ),
+    );
+  }
+}
+
 class _OwnerSection {
   _OwnerSection({required this.ownerId, required this.ownerName});
 
@@ -2825,6 +3027,54 @@ class _OwnerSection {
   return (pinned: pinned, others: others);
 }
 
+class SelectedItemSummary {
+  const SelectedItemSummary({
+    required this.all,
+    required this.local,
+    required this.remote,
+    required this.remoteOwnerIds,
+  });
+
+  final List<ShareItem> all;
+  final List<ShareItem> local;
+  final List<ShareItem> remote;
+  final Set<String> remoteOwnerIds;
+}
+
+SelectedItemSummary summarizeSelectedItems({
+  required List<ShareItem> allItems,
+  required Set<String> selectedKeys,
+}) {
+  if (selectedKeys.isEmpty) {
+    return const SelectedItemSummary(
+      all: <ShareItem>[],
+      local: <ShareItem>[],
+      remote: <ShareItem>[],
+      remoteOwnerIds: <String>{},
+    );
+  }
+  final all = <ShareItem>[];
+  final local = <ShareItem>[];
+  final remote = <ShareItem>[];
+  final remoteOwnerIds = <String>{};
+  for (final item in allItems) {
+    if (!selectedKeys.contains(item.key)) continue;
+    all.add(item);
+    if (item.local) {
+      local.add(item);
+    } else {
+      remote.add(item);
+      remoteOwnerIds.add(item.ownerId);
+    }
+  }
+  return SelectedItemSummary(
+    all: all,
+    local: local,
+    remote: remote,
+    remoteOwnerIds: remoteOwnerIds,
+  );
+}
+
 class _ExplorerGrid extends StatelessWidget {
   const _ExplorerGrid({
     required this.items,
@@ -2835,6 +3085,8 @@ class _ExplorerGrid extends StatelessWidget {
     required this.onRemove,
     required this.onDownload,
     required this.onDownloadAllFromOwner,
+    required this.selectedKeys,
+    required this.onToggleSelection,
     required this.showGrid,
     required this.layoutMode,
     required this.iconSize,
@@ -2849,6 +3101,8 @@ class _ExplorerGrid extends StatelessWidget {
   final Future<void> Function(ShareItem) onDownload;
   final Future<void> Function(String ownerId, String ownerName, List<ShareItem>)
   onDownloadAllFromOwner;
+  final Set<String> selectedKeys;
+  final ValueChanged<ShareItem> onToggleSelection;
   final bool showGrid;
   final ItemLayoutMode layoutMode;
   final double iconSize;
@@ -2983,6 +3237,8 @@ class _ExplorerGrid extends StatelessWidget {
                   key: ValueKey(item.key),
                   item: item,
                   createItem: buildDragItem,
+                  selected: selectedKeys.contains(item.key),
+                  onTap: () => onToggleSelection(item),
                   isFavorite: isFavorite(item),
                   onToggleFavorite: () => onToggleFavorite(item),
                   onRemove: item.local ? () => onRemove(item) : null,
@@ -3003,6 +3259,8 @@ class _ExplorerGrid extends StatelessWidget {
                   key: ValueKey(item.key),
                   item: item,
                   createItem: buildDragItem,
+                  selected: selectedKeys.contains(item.key),
+                  onTap: () => onToggleSelection(item),
                   isFavorite: isFavorite(item),
                   onToggleFavorite: () => onToggleFavorite(item),
                   onRemove: item.local ? () => onRemove(item) : null,
@@ -3046,6 +3304,8 @@ class IconTile extends StatefulWidget {
     super.key,
     required this.item,
     required this.createItem,
+    this.selected = false,
+    this.onTap,
     required this.isFavorite,
     required this.onToggleFavorite,
     required this.onRemove,
@@ -3056,6 +3316,8 @@ class IconTile extends StatefulWidget {
 
   final ShareItem item;
   final Future<DragItem?> Function(ShareItem) createItem;
+  final bool selected;
+  final VoidCallback? onTap;
   final bool isFavorite;
   final VoidCallback onToggleFavorite;
   final VoidCallback? onRemove;
@@ -3232,6 +3494,24 @@ class _IconTileState extends State<IconTile> {
             ),
           ),
         ),
+        if (widget.selected)
+          Positioned(
+            left: 4,
+            top: 4,
+            child: Container(
+              width: 16,
+              height: 16,
+              decoration: BoxDecoration(
+                color: theme.colorScheme.primary,
+                shape: BoxShape.circle,
+              ),
+              child: Icon(
+                Icons.check,
+                size: 12,
+                color: theme.colorScheme.onPrimary,
+              ),
+            ),
+          ),
       ],
     );
 
@@ -3277,19 +3557,24 @@ class _IconTileState extends State<IconTile> {
             waitDuration: const Duration(milliseconds: 500),
             child: GestureDetector(
               behavior: HitTestBehavior.opaque,
+              onTap: widget.onTap,
               onSecondaryTapDown: _showContextMenu,
               child: widget.compact
                   ? Container(
                       padding: const EdgeInsets.fromLTRB(8, 6, 6, 6),
                       decoration: BoxDecoration(
-                        color: theme.colorScheme.surface.withValues(
-                          alpha: 0.68,
-                        ),
+                        color: widget.selected
+                            ? theme.colorScheme.primaryContainer.withValues(
+                                alpha: 0.38,
+                              )
+                            : theme.colorScheme.surface.withValues(alpha: 0.68),
                         borderRadius: BorderRadius.circular(10),
                         border: Border.all(
-                          color: theme.colorScheme.outlineVariant.withValues(
-                            alpha: 0.42,
-                          ),
+                          color: widget.selected
+                              ? theme.colorScheme.primary.withValues(alpha: 0.8)
+                              : theme.colorScheme.outlineVariant.withValues(
+                                  alpha: 0.42,
+                                ),
                         ),
                       ),
                       child: Row(
@@ -3325,25 +3610,42 @@ class _IconTileState extends State<IconTile> {
                         ],
                       ),
                     )
-                  : Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        iconCard,
-                        const SizedBox(height: 8),
-                        badges,
-                        const SizedBox(height: 6),
-                        SizedBox(
-                          width: max(96.0, iconSize + 36),
-                          child: Text(
-                            label,
-                            textAlign: TextAlign.center,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: theme.textTheme.bodySmall,
-                          ),
+                  : Container(
+                      decoration: BoxDecoration(
+                        color: widget.selected
+                            ? theme.colorScheme.primaryContainer.withValues(
+                                alpha: 0.28,
+                              )
+                            : Colors.transparent,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                          color: widget.selected
+                              ? theme.colorScheme.primary.withValues(
+                                  alpha: 0.78,
+                                )
+                              : Colors.transparent,
                         ),
-                        actionButtons,
-                      ],
+                      ),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          iconCard,
+                          const SizedBox(height: 8),
+                          badges,
+                          const SizedBox(height: 6),
+                          SizedBox(
+                            width: max(96.0, iconSize + 36),
+                            child: Text(
+                              label,
+                              textAlign: TextAlign.center,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: theme.textTheme.bodySmall,
+                            ),
+                          ),
+                          actionButtons,
+                        ],
+                      ),
                     ),
             ),
           ),
@@ -4236,10 +4538,8 @@ class Controller extends ChangeNotifier {
     }
   }
 
-  void sendNudge() {
-    final u = _udp;
-    if (u == null) return;
-    final payloadMap = _withAuth(<String, dynamic>{
+  Map<String, dynamic> _buildNudgePayload() {
+    return _withAuth(<String, dynamic>{
       'tag': _tag,
       'type': 'nudge',
       'protocolMajor': _protocolMajor,
@@ -4251,6 +4551,12 @@ class Controller extends ChangeNotifier {
       'clientPort': listenPort,
       'clientRevision': revision,
     });
+  }
+
+  void sendNudge() {
+    final u = _udp;
+    if (u == null) return;
+    final payloadMap = _buildNudgePayload();
     final payloadBytes = utf8.encode(jsonEncode(payloadMap));
     for (final target in _broadcastTargets()) {
       if (_shouldSimulateDrop('udp_out_nudge')) continue;
@@ -4269,6 +4575,32 @@ class Controller extends ChangeNotifier {
     // Broadcast can be asymmetric on some LAN setups; also nudge peers directly.
     final sent = <String>{};
     for (final p in peers.values) {
+      if (!_isPeerTrusted(
+        peerId: p.id,
+        remoteAddress: p.addr.address,
+        remotePort: p.port,
+        countDiagnostics: false,
+      )) {
+        continue;
+      }
+      final ip = p.addr.address;
+      if (!sent.add(ip)) continue;
+      if (_shouldSimulateDrop('udp_out_nudge')) continue;
+      u.send(payloadBytes, p.addr, _discoveryPort);
+      unawaited(_sendNudgeTcp(p, payloadMap));
+    }
+  }
+
+  void sendNudgeToPeerIds(Set<String> peerIds) {
+    if (peerIds.isEmpty) return;
+    final u = _udp;
+    if (u == null) return;
+    final payloadMap = _buildNudgePayload();
+    final payloadBytes = utf8.encode(jsonEncode(payloadMap));
+    final sent = <String>{};
+    for (final peerId in peerIds) {
+      final p = peers[peerId];
+      if (p == null) continue;
       if (!_isPeerTrusted(
         peerId: p.id,
         remoteAddress: p.addr.address,

@@ -199,4 +199,39 @@ void main() {
     );
     expect(keys, {'peer-xyz', '192.168.0.20', '192.168.0.20:40406'});
   });
+
+  test('summarizeSelectedItems splits local/remote and owner targets', () {
+    final local = _item(
+      ownerId: 'local',
+      owner: 'This PC',
+      id: '1',
+      name: 'a.txt',
+      size: 1,
+      local: true,
+    );
+    final remoteA = _item(
+      ownerId: 'peer-a',
+      owner: 'Peer A',
+      id: '2',
+      name: 'b.txt',
+      size: 2,
+      local: false,
+    );
+    final remoteB = _item(
+      ownerId: 'peer-b',
+      owner: 'Peer B',
+      id: '3',
+      name: 'c.txt',
+      size: 3,
+      local: false,
+    );
+    final summary = summarizeSelectedItems(
+      allItems: [local, remoteA, remoteB],
+      selectedKeys: {local.key, remoteB.key},
+    );
+    expect(summary.all.map((e) => e.key).toSet(), {local.key, remoteB.key});
+    expect(summary.local.map((e) => e.key).toSet(), {local.key});
+    expect(summary.remote.map((e) => e.key).toSet(), {remoteB.key});
+    expect(summary.remoteOwnerIds, {'peer-b'});
+  });
 }
