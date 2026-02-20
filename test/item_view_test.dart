@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:fileshare/main.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -284,6 +286,60 @@ void main() {
     expect(normalizeRoomChannel('___ROOM___'), '___room___');
     expect(normalizeRoomChannel('x' * 100).length, lessThanOrEqualTo(64));
   });
+
+  test('applyPayloadCipherXor roundtrips with matching key and nonce', () {
+    final source = Uint8List.fromList(
+      List<int>.generate(1024, (i) => (i * 7) & 0xff),
+    );
+    const roomKey = 'demo-room-key';
+    const nonce = 'AAECAwQFBgcICQoLDA0ODw';
+    final encrypted = applyPayloadCipherXor(
+      bytes: source,
+      roomKey: roomKey,
+      nonce: nonce,
+      streamOffsetBytes: 0,
+    );
+    expect(encrypted, isNot(orderedEquals(source)));
+    final decrypted = applyPayloadCipherXor(
+      bytes: encrypted,
+      roomKey: roomKey,
+      nonce: nonce,
+      streamOffsetBytes: 0,
+    );
+    expect(decrypted, orderedEquals(source));
+  });
+
+  test(
+    'applyPayloadCipherXor produces stable output when transfer resumes at offset',
+    () {
+      final source = Uint8List.fromList(
+        List<int>.generate(4096, (i) => (i * 11 + 3) & 0xff),
+      );
+      const roomKey = 'resume-room-key';
+      const nonce = 'YWFhYmJiY2NjZGRkZWVlZg';
+      final allAtOnce = applyPayloadCipherXor(
+        bytes: source,
+        roomKey: roomKey,
+        nonce: nonce,
+        streamOffsetBytes: 0,
+      );
+      const split = 1537;
+      final partA = applyPayloadCipherXor(
+        bytes: Uint8List.fromList(source.sublist(0, split)),
+        roomKey: roomKey,
+        nonce: nonce,
+        streamOffsetBytes: 0,
+      );
+      final partB = applyPayloadCipherXor(
+        bytes: Uint8List.fromList(source.sublist(split)),
+        roomKey: roomKey,
+        nonce: nonce,
+        streamOffsetBytes: split,
+      );
+      final resumed = Uint8List.fromList(<int>[...partA, ...partB]);
+      expect(resumed, orderedEquals(allAtOnce));
+    },
+  );
 
   test('previewKindForName detects image/text/pdf and unsupported types', () {
     expect(previewKindForName('photo.png'), ItemPreviewKind.image);

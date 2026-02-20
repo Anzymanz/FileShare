@@ -220,4 +220,15 @@ void main() {
     expect(restored.relayModeEnabled, isTrue);
     expect(restored.relayEndpoints, '192.168.0.10:40406\n192.168.0.11:5000');
   });
+
+  test('AppSettings serializes payload encryption preference', () {
+    const settings = AppSettings(
+      darkMode: true,
+      themeIndex: 0,
+      soundOnNudge: false,
+      payloadEncryptionEnabled: true,
+    );
+    final restored = AppSettings.fromJson(settings.toJson());
+    expect(restored.payloadEncryptionEnabled, isTrue);
+  });
 }

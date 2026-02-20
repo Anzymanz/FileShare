@@ -58,6 +58,11 @@ const int _defaultTransferRateLimitMBps = 50;
 const int _defaultGlobalRateLimitMBps = 200;
 const int _defaultRoomKeyExpiryMinutes = 0;
 const int _maxRoomKeyExpiryMinutes = 24 * 60;
+const String _payloadModePlain = 'plain';
+const String _payloadModeXorV1 = 'xor-v1';
+const String _payloadCipherContext = 'fileshare-payload-v1';
+const int _payloadCipherBlockBytes = 32;
+const int _payloadNonceBytes = 16;
 const int _dragCacheMaxBytes = 2 * 1024 * 1024 * 1024; // 2 GiB
 const Duration _dragCacheMaxAge = Duration(days: 7);
 const Duration _housekeepingInterval = Duration(minutes: 15);
@@ -389,6 +394,122 @@ String duplicateHandlingModeToString(DuplicateHandlingMode mode) {
       return 'skip';
     case DuplicateHandlingMode.replace:
       return 'replace';
+  }
+}
+
+String payloadModeFromString(String? value) {
+  switch ((value ?? '').trim().toLowerCase()) {
+    case _payloadModeXorV1:
+      return _payloadModeXorV1;
+    default:
+      return _payloadModePlain;
+  }
+}
+
+String payloadModeLabel(String mode) {
+  switch (payloadModeFromString(mode)) {
+    case _payloadModeXorV1:
+      return 'Encrypted (XOR v1)';
+    default:
+      return 'Plain';
+  }
+}
+
+bool payloadEncryptionAvailable({
+  required bool enabled,
+  required String sharedRoomKey,
+}) {
+  return enabled && sharedRoomKey.trim().isNotEmpty;
+}
+
+String generatePayloadNonce() {
+  final random = _createSecureRandom();
+  final bytes = Uint8List(_payloadNonceBytes);
+  for (var i = 0; i < bytes.length; i++) {
+    bytes[i] = random.nextInt(256);
+  }
+  return base64UrlEncode(bytes).replaceAll('=', '');
+}
+
+String? normalizePayloadNonce(String? value) {
+  if (value == null) return null;
+  final decoded = _decodePayloadNonce(value);
+  if (decoded == null) return null;
+  if (decoded.length < 8 || decoded.length > 64) return null;
+  return base64UrlEncode(decoded).replaceAll('=', '');
+}
+
+Uint8List applyPayloadCipherXor({
+  required Uint8List bytes,
+  required String roomKey,
+  required String nonce,
+  required int streamOffsetBytes,
+}) {
+  final out = Uint8List.fromList(bytes);
+  final normalizedNonce = normalizePayloadNonce(nonce);
+  if (normalizedNonce == null) return out;
+  _applyPayloadCipherXorInPlaceNormalized(
+    out,
+    roomKey: roomKey,
+    normalizedNonce: normalizedNonce,
+    streamOffsetBytes: streamOffsetBytes,
+  );
+  return out;
+}
+
+void _applyPayloadCipherXorInPlaceNormalized(
+  Uint8List bytes, {
+  required String roomKey,
+  required String normalizedNonce,
+  required int streamOffsetBytes,
+}) {
+  if (bytes.isEmpty) return;
+  final key = utf8.encode(roomKey.trim());
+  if (key.isEmpty) return;
+  var position = 0;
+  var absoluteOffset = max(0, streamOffsetBytes);
+  while (position < bytes.length) {
+    final blockIndex = absoluteOffset ~/ _payloadCipherBlockBytes;
+    final blockOffset = absoluteOffset % _payloadCipherBlockBytes;
+    final seed = utf8.encode(
+      '$_payloadCipherContext:$normalizedNonce:$blockIndex',
+    );
+    final block = crypto.Hmac(crypto.sha256, key).convert(seed).bytes;
+    final take = min(bytes.length - position, block.length - blockOffset);
+    if (take <= 0) break;
+    for (var i = 0; i < take; i++) {
+      bytes[position + i] ^= block[blockOffset + i];
+    }
+    position += take;
+    absoluteOffset += take;
+  }
+}
+
+Uint8List? _decodePayloadNonce(String value) {
+  var raw = value.trim();
+  if (raw.isEmpty) return null;
+  raw = raw.replaceAll(RegExp(r'\s+'), '');
+  final rem = raw.length % 4;
+  if (rem == 1) return null;
+  if (rem > 0) {
+    raw = '$raw${'=' * (4 - rem)}';
+  }
+  try {
+    return Uint8List.fromList(base64Url.decode(raw));
+  } catch (_) {
+    try {
+      return Uint8List.fromList(base64.decode(raw));
+    } catch (_) {
+      return null;
+    }
+  }
+}
+
+Random _createSecureRandom() {
+  try {
+    return Random.secure();
+  } catch (_) {
+    return Random();
   }
 }
 
@@ -1175,6 +1296,7 @@ class _MyAppState extends State<MyApp> {
   late String relayEndpoints;
   late bool handoffModeEnabled;
   late bool pairingRequired;
+  late bool payloadEncryptionEnabled;
   late String roomChannel;
   late String sharedRoomKey;
   late int roomKeyExpiryMinutes;
@@ -1206,6 +1328,7 @@ class _MyAppState extends State<MyApp> {
     relayEndpoints = widget.initialSettings.relayEndpoints;
     handoffModeEnabled = widget.initialSettings.handoffModeEnabled;
     pairingRequired = widget.initialSettings.pairingRequired;
+    payloadEncryptionEnabled = widget.initialSettings.payloadEncryptionEnabled;
     roomChannel = widget.initialSettings.roomChannel;
     sharedRoomKey = widget.initialSettings.sharedRoomKey;
     roomKeyExpiryMinutes = widget.initialSettings.roomKeyExpiryMinutes;
@@ -1235,6 +1358,7 @@ class _MyAppState extends State<MyApp> {
         relayEndpoints: relayEndpoints,
         handoffModeEnabled: handoffModeEnabled,
         pairingRequired: pairingRequired,
+        payloadEncryptionEnabled: payloadEncryptionEnabled,
         roomChannel: roomChannel,
         sharedRoomKey: sharedRoomKey,
         roomKeyExpiryMinutes: roomKeyExpiryMinutes,
@@ -1286,6 +1410,7 @@ class _MyAppState extends State<MyApp> {
         initialRelayEndpoints: relayEndpoints,
         initialHandoffModeEnabled: handoffModeEnabled,
         initialPairingRequired: pairingRequired,
+        initialPayloadEncryptionEnabled: payloadEncryptionEnabled,
         startInTrayRequested: widget.startInTrayRequested,
         initialRoomChannel: roomChannel,
         initialSharedRoomKey: sharedRoomKey,
@@ -1346,6 +1471,10 @@ class _MyAppState extends State<MyApp> {
         },
         onPairingRequiredChanged: (value) {
           setState(() => pairingRequired = value);
+          unawaited(_persistSettings());
+        },
+        onPayloadEncryptionEnabledChanged: (value) {
+          setState(() => payloadEncryptionEnabled = value);
           unawaited(_persistSettings());
         },
         onRoomChannelChanged: (value) {
@@ -1416,6 +1545,7 @@ class Home extends StatefulWidget {
     required this.initialRelayEndpoints,
     required this.initialHandoffModeEnabled,
     required this.initialPairingRequired,
+    required this.initialPayloadEncryptionEnabled,
     required this.startInTrayRequested,
     required this.initialRoomChannel,
     required this.initialSharedRoomKey,
@@ -1442,6 +1572,7 @@ class Home extends StatefulWidget {
     required this.onRelayEndpointsChanged,
     required this.onHandoffModeChanged,
     required this.onPairingRequiredChanged,
+    required this.onPayloadEncryptionEnabledChanged,
     required this.onRoomChannelChanged,
     required this.onSharedRoomKeyChanged,
     required this.onRoomKeyExpiryMinutesChanged,
@@ -1468,6 +1599,7 @@ class Home extends StatefulWidget {
   final String initialRelayEndpoints;
   final bool initialHandoffModeEnabled;
   final bool initialPairingRequired;
+  final bool initialPayloadEncryptionEnabled;
   final bool startInTrayRequested;
   final String initialRoomChannel;
   final String initialSharedRoomKey;
@@ -1494,6 +1626,7 @@ class Home extends StatefulWidget {
   final ValueChanged<String> onRelayEndpointsChanged;
   final ValueChanged<bool> onHandoffModeChanged;
   final ValueChanged<bool> onPairingRequiredChanged;
+  final ValueChanged<bool> onPayloadEncryptionEnabledChanged;
   final ValueChanged<String> onRoomChannelChanged;
   final ValueChanged<String> onSharedRoomKeyChanged;
   final ValueChanged<int> onRoomKeyExpiryMinutesChanged;
@@ -1533,6 +1666,7 @@ class _HomeState extends State<Home>
   String _relayEndpoints = '';
   bool _handoffModeEnabled = false;
   bool _pairingRequired = false;
+  bool _payloadEncryptionEnabled = false;
   String _roomChannel = '';
   String _sharedRoomKey = '';
   int _roomKeyExpiryMinutes = _defaultRoomKeyExpiryMinutes;
@@ -1586,6 +1720,7 @@ class _HomeState extends State<Home>
     _relayEndpoints = widget.initialRelayEndpoints;
     _handoffModeEnabled = widget.initialHandoffModeEnabled;
     _pairingRequired = widget.initialPairingRequired;
+    _payloadEncryptionEnabled = widget.initialPayloadEncryptionEnabled;
     _roomChannel = widget.initialRoomChannel;
     _soundOnNudge = widget.initialSoundOnNudge;
     _sharedRoomKey = widget.initialSharedRoomKey;
@@ -1623,6 +1758,7 @@ class _HomeState extends State<Home>
     );
     c.setHandoffMode(_handoffModeEnabled);
     c.setPairingRequired(_pairingRequired);
+    c.setPayloadEncryptionEnabled(_payloadEncryptionEnabled);
     c.setAutoUpdateChecks(_autoUpdateChecks);
     c.setUpdateChannel(_updateChannel);
     _nudgeAudioPlayer = AudioPlayer()..setReleaseMode(ReleaseMode.stop);
@@ -3618,6 +3754,22 @@ class _HomeState extends State<Home>
                     const SizedBox(height: 4),
                     Text(pairingStatus!),
                   ],
+                  SwitchListTile.adaptive(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Encrypt payload streams'),
+                    subtitle: Text(
+                      _sharedRoomKey.isEmpty
+                          ? 'Requires a room key on both peers'
+                          : 'Protect file bytes in transit',
+                    ),
+                    value: _payloadEncryptionEnabled,
+                    onChanged: (value) {
+                      setDialogState(() => _payloadEncryptionEnabled = value);
+                      c.setPayloadEncryptionEnabled(value);
+                      widget.onPayloadEncryptionEnabledChanged(value);
+                    },
+                  ),
                   SwitchListTile.adaptive(
                     dense: true,
                     contentPadding: EdgeInsets.zero,
@@ -6779,6 +6931,7 @@ class Controller extends ChangeNotifier {
   bool _dragOutCompatibilityMode = false;
   bool _handoffModeEnabled = false;
   bool _pairingRequired = false;
+  bool _payloadEncryptionEnabled = false;
   bool _relayModeEnabled = false;
   final Set<String> _relayEndpoints = <String>{};
   DateTime _lastRelayRefreshAt = DateTime.fromMillisecondsSinceEpoch(0);
@@ -6808,6 +6961,7 @@ class Controller extends ChangeNotifier {
   Set<String> get peerBlocklist => Set<String>.unmodifiable(_peerBlocklist);
   bool get handoffModeEnabled => _handoffModeEnabled;
   bool get pairingRequired => _pairingRequired;
+  bool get payloadEncryptionEnabled => _payloadEncryptionEnabled;
   bool get relayModeEnabled => _relayModeEnabled;
   Set<String> get relayEndpoints => Set<String>.unmodifiable(_relayEndpoints);
   String get localFingerprint => buildPeerFingerprint(deviceId);
@@ -6944,6 +7098,12 @@ class Controller extends ChangeNotifier {
     _dropUntrustedPeers();
     _evaluateDiscoveryProfile(force: true);
     _broadcast();
+    notifyListeners();
+  }
+
+  void setPayloadEncryptionEnabled(bool enabled) {
+    if (_payloadEncryptionEnabled == enabled) return;
+    _payloadEncryptionEnabled = enabled;
     notifyListeners();
   }
 
@@ -9471,6 +9631,9 @@ class Controller extends ChangeNotifier {
                   _transferPort,
               'id': itemId,
               'offset': offset,
+              'payloadMode': payloadModeFromString(
+                _safeString(request['payloadMode'], maxChars: 32),
+              ),
             }),
           ),
         );
@@ -9724,6 +9887,21 @@ class Controller extends ChangeNotifier {
         if (id == null) return;
         final requestedOffset =
             _safeInt(req['offset'], min: 0, max: 0x7fffffff) ?? 0;
+        final requestedPayloadMode = payloadModeFromString(
+          _safeString(req['payloadMode'], maxChars: 32),
+        );
+        final usePayloadEncryption =
+            requestedPayloadMode == _payloadModeXorV1 &&
+            payloadEncryptionAvailable(
+              enabled: _payloadEncryptionEnabled,
+              sharedRoomKey: _sharedRoomKey,
+            );
+        final payloadMode = usePayloadEncryption
+            ? _payloadModeXorV1
+            : _payloadModePlain;
+        final payloadNonce = usePayloadEncryption
+            ? generatePayloadNonce()
+            : null;
         final peerId =
             _safeString(req['clientId'], maxChars: _maxPeerIdChars) ?? '';
         final peerName =
@@ -9840,6 +10018,8 @@ class Controller extends ChangeNotifier {
               'size': item.size,
               'offset': startOffset,
               'sha256': sha256,
+              'payloadMode': payloadMode,
+              if (payloadNonce != null) 'payloadNonce': payloadNonce,
             }),
           ),
         );
@@ -9852,6 +10032,7 @@ class Controller extends ChangeNotifier {
           totalBytes: item.size - startOffset,
         );
         try {
+          var streamOffset = startOffset;
           await for (final chunk in file.openRead(startOffset)) {
             await _uploadRateLimiter.consume(
               peerKey,
@@ -9863,7 +10044,19 @@ class Controller extends ChangeNotifier {
               chunk.length,
               _globalRateLimitBytesPerSecond,
             );
-            s.add(chunk);
+            List<int> payload = chunk;
+            if (payloadNonce != null) {
+              final encrypted = Uint8List.fromList(chunk);
+              _applyPayloadCipherXorInPlaceNormalized(
+                encrypted,
+                roomKey: _sharedRoomKey,
+                normalizedNonce: payloadNonce,
+                streamOffsetBytes: streamOffset,
+              );
+              payload = encrypted;
+            }
+            s.add(payload);
+            streamOffset += chunk.length;
             _addTransferProgress(transferId, chunk.length);
           }
           await s.flush();
@@ -9936,6 +10129,13 @@ class Controller extends ChangeNotifier {
   }) async {
     final peer = peers[it.peerId];
     if (peer == null) throw Exception('Peer not found');
+    final requestedPayloadMode =
+        payloadEncryptionAvailable(
+          enabled: _payloadEncryptionEnabled,
+          sharedRoomKey: _sharedRoomKey,
+        )
+        ? _payloadModeXorV1
+        : _payloadModePlain;
     if (!_isPeerTrusted(
       peerId: peer.id,
       remoteAddress: peer.addr.address,
@@ -9966,6 +10166,7 @@ class Controller extends ChangeNotifier {
             'clientPort': listenPort,
             'id': it.itemId,
             'offset': max(0, initialOffsetBytes),
+            'payloadMode': requestedPayloadMode,
             if (peer.relayTargetId != null) 'relayTargetId': peer.relayTargetId,
           }),
         ),
@@ -9989,6 +10190,20 @@ class Controller extends ChangeNotifier {
         throw Exception(message);
       }
       if (m['type'] != 'file') throw Exception('Bad response');
+      final negotiatedPayloadMode = payloadModeFromString(
+        _safeString(m['payloadMode'], maxChars: 32),
+      );
+      final payloadNonce = negotiatedPayloadMode == _payloadModeXorV1
+          ? normalizePayloadNonce(_safeString(m['payloadNonce'], maxChars: 256))
+          : null;
+      if (negotiatedPayloadMode == _payloadModeXorV1) {
+        if (_sharedRoomKey.isEmpty) {
+          throw Exception('Encrypted payload requires matching room key');
+        }
+        if (payloadNonce == null) {
+          throw Exception('Encrypted payload nonce missing');
+        }
+      }
       final totalBytes = (m['size'] as num).toInt();
       final streamOffset =
           _safeInt(m['offset'], min: 0, max: max(0, totalBytes)) ?? 0;
@@ -10040,12 +10255,24 @@ class Controller extends ChangeNotifier {
       }
       try {
         var left = totalBytes - streamOffset;
+        var payloadOffset = streamOffset;
         if (h.rem.isNotEmpty) {
           final n = min(left, h.rem.length);
           if (n > 0 &&
               !canceled() &&
               !_canceledTransfers.contains(transferId)) {
-            final payload = h.rem.sublist(0, n);
+            List<int> payload = h.rem.sublist(0, n);
+            if (negotiatedPayloadMode == _payloadModeXorV1 &&
+                payloadNonce != null) {
+              final decoded = Uint8List.fromList(payload);
+              _applyPayloadCipherXorInPlaceNormalized(
+                decoded,
+                roomKey: _sharedRoomKey,
+                normalizedNonce: payloadNonce,
+                streamOffsetBytes: payloadOffset,
+              );
+              payload = decoded;
+            }
             await _downloadRateLimiter.consume(
               peer.id,
               n,
@@ -10059,6 +10286,7 @@ class Controller extends ChangeNotifier {
             sink.add(payload);
             hashConverter?.add(payload);
             _addTransferProgress(transferId, n);
+            payloadOffset += n;
           }
           left -= n;
         }
@@ -10069,7 +10297,18 @@ class Controller extends ChangeNotifier {
           final chunk = h.it.current;
           final n = min(left, chunk.length);
           if (n > 0) {
-            final payload = chunk.sublist(0, n);
+            List<int> payload = chunk.sublist(0, n);
+            if (negotiatedPayloadMode == _payloadModeXorV1 &&
+                payloadNonce != null) {
+              final decoded = Uint8List.fromList(payload);
+              _applyPayloadCipherXorInPlaceNormalized(
+                decoded,
+                roomKey: _sharedRoomKey,
+                normalizedNonce: payloadNonce,
+                streamOffsetBytes: payloadOffset,
+              );
+              payload = decoded;
+            }
             await _downloadRateLimiter.consume(
               peer.id,
               n,
@@ -10083,6 +10322,7 @@ class Controller extends ChangeNotifier {
             sink.add(payload);
             hashConverter?.add(payload);
             _addTransferProgress(transferId, n);
+            payloadOffset += n;
           }
           left -= n;
         }
@@ -10617,6 +10857,7 @@ class AppSettings {
     this.relayEndpoints = '',
     this.handoffModeEnabled = false,
     this.pairingRequired = false,
+    this.payloadEncryptionEnabled = false,
     this.roomChannel = '',
     this.sharedRoomKey = '',
     this.roomKeyExpiryMinutes = _defaultRoomKeyExpiryMinutes,
@@ -10643,6 +10884,7 @@ class AppSettings {
   final String relayEndpoints;
   final bool handoffModeEnabled;
   final bool pairingRequired;
+  final bool payloadEncryptionEnabled;
   final String roomChannel;
   final String sharedRoomKey;
   final int roomKeyExpiryMinutes;
@@ -10669,6 +10911,7 @@ class AppSettings {
     'relayEndpoints': relayEndpoints,
     'handoffModeEnabled': handoffModeEnabled,
     'pairingRequired': pairingRequired,
+    'payloadEncryptionEnabled': payloadEncryptionEnabled,
     'roomChannel': roomChannel,
     'sharedRoomKey': sharedRoomKey,
     'roomKeyExpiryMinutes': roomKeyExpiryMinutes,
@@ -10703,6 +10946,7 @@ class AppSettings {
       ),
       handoffModeEnabled: json['handoffModeEnabled'] == true,
       pairingRequired: json['pairingRequired'] == true,
+      payloadEncryptionEnabled: json['payloadEncryptionEnabled'] == true,
       roomChannel: normalizeRoomChannel((json['roomChannel'] as String? ?? '')),
       sharedRoomKey: (json['sharedRoomKey'] as String? ?? '').trim(),
       roomKeyExpiryMinutes: _clampRoomKeyExpiryMinutes(
