@@ -598,6 +598,54 @@ String trustListToText(Set<String> values) {
   return sorted.join('\n');
 }
 
+String _normalizeRelayEndpointToken(String raw) => raw.trim().toLowerCase();
+
+({String host, int port})? parseRelayEndpointToken(
+  String raw, {
+  int defaultPort = _transferPort,
+}) {
+  final token = _normalizeRelayEndpointToken(raw);
+  if (token.isEmpty) return null;
+  var host = token;
+  var port = defaultPort;
+  if (token.contains(':')) {
+    final parts = token.split(':');
+    if (parts.length != 2) return null;
+    host = parts[0].trim();
+    final parsedPort = int.tryParse(parts[1].trim());
+    if (parsedPort == null || parsedPort < 1 || parsedPort > 65535) {
+      return null;
+    }
+    port = parsedPort;
+  }
+  if (host.isEmpty) return null;
+  final octets = host.split('.');
+  if (octets.length != 4) return null;
+  for (final octet in octets) {
+    final value = int.tryParse(octet);
+    if (value == null || value < 0 || value > 255) {
+      return null;
+    }
+  }
+  return (host: host, port: port);
+}
+
+Set<String> parseRelayEndpointInput(String raw) {
+  final out = <String>{};
+  final pieces = raw.split(RegExp(r'[\s,;]+'));
+  for (final piece in pieces) {
+    final parsed = parseRelayEndpointToken(piece);
+    if (parsed == null) continue;
+    out.add('${parsed.host}:${parsed.port}');
+  }
+  return out;
+}
+
+String relayEndpointsToText(Set<String> values) {
+  final sorted = values.toList()..sort();
+  return sorted.join('\n');
+}
+
 Set<String> buildTrustCandidateKeys({
   String? peerId,
   String? address,
@@ -1123,6 +1171,8 @@ class _MyAppState extends State<MyApp> {
   late bool startInTrayOnLaunch;
   late bool sendToIntegrationEnabled;
   late bool dragOutCompatibilityMode;
+  late bool relayModeEnabled;
+  late String relayEndpoints;
   late bool handoffModeEnabled;
   late bool pairingRequired;
   late String roomChannel;
@@ -1152,6 +1202,8 @@ class _MyAppState extends State<MyApp> {
     startInTrayOnLaunch = widget.initialSettings.startInTrayOnLaunch;
     sendToIntegrationEnabled = widget.initialSettings.sendToIntegrationEnabled;
     dragOutCompatibilityMode = widget.initialSettings.dragOutCompatibilityMode;
+    relayModeEnabled = widget.initialSettings.relayModeEnabled;
+    relayEndpoints = widget.initialSettings.relayEndpoints;
     handoffModeEnabled = widget.initialSettings.handoffModeEnabled;
     pairingRequired = widget.initialSettings.pairingRequired;
     roomChannel = widget.initialSettings.roomChannel;
@@ -1179,6 +1231,8 @@ class _MyAppState extends State<MyApp> {
         startInTrayOnLaunch: startInTrayOnLaunch,
         sendToIntegrationEnabled: sendToIntegrationEnabled,
         dragOutCompatibilityMode: dragOutCompatibilityMode,
+        relayModeEnabled: relayModeEnabled,
+        relayEndpoints: relayEndpoints,
         handoffModeEnabled: handoffModeEnabled,
         pairingRequired: pairingRequired,
         roomChannel: roomChannel,
@@ -1228,6 +1282,8 @@ class _MyAppState extends State<MyApp> {
         initialStartInTrayOnLaunch: startInTrayOnLaunch,
         initialSendToIntegrationEnabled: sendToIntegrationEnabled,
         initialDragOutCompatibilityMode: dragOutCompatibilityMode,
+        initialRelayModeEnabled: relayModeEnabled,
+        initialRelayEndpoints: relayEndpoints,
         initialHandoffModeEnabled: handoffModeEnabled,
         initialPairingRequired: pairingRequired,
         startInTrayRequested: widget.startInTrayRequested,
@@ -1274,6 +1330,14 @@ class _MyAppState extends State<MyApp> {
         },
         onDragOutCompatibilityModeChanged: (value) {
           setState(() => dragOutCompatibilityMode = value);
+          unawaited(_persistSettings());
+        },
+        onRelayModeChanged: (value) {
+          setState(() => relayModeEnabled = value);
+          unawaited(_persistSettings());
+        },
+        onRelayEndpointsChanged: (value) {
+          setState(() => relayEndpoints = value);
           unawaited(_persistSettings());
         },
         onHandoffModeChanged: (value) {
@@ -1348,6 +1412,8 @@ class Home extends StatefulWidget {
     required this.initialStartInTrayOnLaunch,
     required this.initialSendToIntegrationEnabled,
     required this.initialDragOutCompatibilityMode,
+    required this.initialRelayModeEnabled,
+    required this.initialRelayEndpoints,
     required this.initialHandoffModeEnabled,
     required this.initialPairingRequired,
     required this.startInTrayRequested,
@@ -1372,6 +1438,8 @@ class Home extends StatefulWidget {
     required this.onStartInTrayOnLaunchChanged,
     required this.onSendToIntegrationChanged,
     required this.onDragOutCompatibilityModeChanged,
+    required this.onRelayModeChanged,
+    required this.onRelayEndpointsChanged,
     required this.onHandoffModeChanged,
     required this.onPairingRequiredChanged,
     required this.onRoomChannelChanged,
@@ -1396,6 +1464,8 @@ class Home extends StatefulWidget {
   final bool initialStartInTrayOnLaunch;
   final bool initialSendToIntegrationEnabled;
   final bool initialDragOutCompatibilityMode;
+  final bool initialRelayModeEnabled;
+  final String initialRelayEndpoints;
   final bool initialHandoffModeEnabled;
   final bool initialPairingRequired;
   final bool startInTrayRequested;
@@ -1420,6 +1490,8 @@ class Home extends StatefulWidget {
   final ValueChanged<bool> onStartInTrayOnLaunchChanged;
   final ValueChanged<bool> onSendToIntegrationChanged;
   final ValueChanged<bool> onDragOutCompatibilityModeChanged;
+  final ValueChanged<bool> onRelayModeChanged;
+  final ValueChanged<String> onRelayEndpointsChanged;
   final ValueChanged<bool> onHandoffModeChanged;
   final ValueChanged<bool> onPairingRequiredChanged;
   final ValueChanged<String> onRoomChannelChanged;
@@ -1457,6 +1529,8 @@ class _HomeState extends State<Home>
   bool _startInTrayOnLaunch = false;
   bool _sendToIntegrationEnabled = false;
   bool _dragOutCompatibilityMode = false;
+  bool _relayModeEnabled = false;
+  String _relayEndpoints = '';
   bool _handoffModeEnabled = false;
   bool _pairingRequired = false;
   String _roomChannel = '';
@@ -1508,6 +1582,8 @@ class _HomeState extends State<Home>
     _startInTrayOnLaunch = widget.initialStartInTrayOnLaunch;
     _sendToIntegrationEnabled = widget.initialSendToIntegrationEnabled;
     _dragOutCompatibilityMode = widget.initialDragOutCompatibilityMode;
+    _relayModeEnabled = widget.initialRelayModeEnabled;
+    _relayEndpoints = widget.initialRelayEndpoints;
     _handoffModeEnabled = widget.initialHandoffModeEnabled;
     _pairingRequired = widget.initialPairingRequired;
     _roomChannel = widget.initialRoomChannel;
@@ -1541,6 +1617,10 @@ class _HomeState extends State<Home>
       globalRateLimitMBps: _globalRateLimitMBps,
     );
     c.setDragOutCompatibilityMode(_dragOutCompatibilityMode);
+    c.setRelayConfig(
+      enabled: _relayModeEnabled,
+      endpoints: parseRelayEndpointInput(_relayEndpoints),
+    );
     c.setHandoffMode(_handoffModeEnabled);
     c.setPairingRequired(_pairingRequired);
     c.setAutoUpdateChecks(_autoUpdateChecks);
@@ -3215,6 +3295,7 @@ class _HomeState extends State<Home>
     final probeController = TextEditingController();
     final roomController = TextEditingController(text: _roomChannel);
     final keyController = TextEditingController(text: _sharedRoomKey);
+    final relayController = TextEditingController(text: _relayEndpoints);
     final allowlistController = TextEditingController(text: _peerAllowlist);
     final blocklistController = TextEditingController(text: _peerBlocklist);
     String? probeStatus;
@@ -3228,6 +3309,8 @@ class _HomeState extends State<Home>
     bool applyingStartup = false;
     String? sendToStatus;
     bool applyingSendTo = false;
+    String? relayStatus;
+    bool applyingRelayConfig = false;
     String? pairingStatus;
     List<PairingRequest> pairingRequests = c.pendingPairingRequests;
     String? handoffStatus;
@@ -3759,6 +3842,89 @@ class _HomeState extends State<Home>
                   SwitchListTile.adaptive(
                     dense: true,
                     contentPadding: EdgeInsets.zero,
+                    title: const Text('Relay mode (experimental)'),
+                    subtitle: const Text(
+                      'Use configured relay endpoints for segmented networks',
+                    ),
+                    value: _relayModeEnabled,
+                    onChanged: (value) async {
+                      setDialogState(() {
+                        _relayModeEnabled = value;
+                        applyingRelayConfig = true;
+                        relayStatus = value
+                            ? 'Applying relay settings...'
+                            : 'Relay mode disabled';
+                      });
+                      final endpoints = parseRelayEndpointInput(
+                        relayController.text,
+                      );
+                      c.setRelayConfig(enabled: value, endpoints: endpoints);
+                      widget.onRelayModeChanged(value);
+                      final endpointText = relayEndpointsToText(endpoints);
+                      _relayEndpoints = endpointText;
+                      relayController.text = endpointText;
+                      widget.onRelayEndpointsChanged(endpointText);
+                      if (!context.mounted) return;
+                      setDialogState(() {
+                        applyingRelayConfig = false;
+                        relayStatus = value
+                            ? 'Relay mode enabled (${endpoints.length} endpoint${endpoints.length == 1 ? '' : 's'})'
+                            : 'Relay mode disabled';
+                      });
+                    },
+                  ),
+                  if (_relayModeEnabled) ...[
+                    const SizedBox(height: 4),
+                    const Text('Relay Endpoints (IP or IP:port)'),
+                    const SizedBox(height: 6),
+                    TextField(
+                      controller: relayController,
+                      minLines: 2,
+                      maxLines: 4,
+                      decoration: const InputDecoration(
+                        hintText: '192.168.0.10:40406',
+                        isDense: true,
+                      ),
+                    ),
+                    Row(
+                      children: [
+                        const Spacer(),
+                        TextButton(
+                          onPressed: applyingRelayConfig
+                              ? null
+                              : () {
+                                  final endpoints = parseRelayEndpointInput(
+                                    relayController.text,
+                                  );
+                                  final text = relayEndpointsToText(endpoints);
+                                  relayController.text = text;
+                                  _relayEndpoints = text;
+                                  c.setRelayConfig(
+                                    enabled: _relayModeEnabled,
+                                    endpoints: endpoints,
+                                  );
+                                  widget.onRelayEndpointsChanged(text);
+                                  setDialogState(
+                                    () => relayStatus =
+                                        'Relay endpoints saved (${endpoints.length})',
+                                  );
+                                },
+                          child: Text(
+                            applyingRelayConfig
+                                ? 'Applying...'
+                                : 'Apply Relay Endpoints',
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                  if (relayStatus != null) ...[
+                    const SizedBox(height: 4),
+                    Text(relayStatus!),
+                  ],
+                  SwitchListTile.adaptive(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
                     title: const Text('Handoff mode'),
                     subtitle: const Text(
                       'Require owner approval before peers can download your files',
@@ -4172,6 +4338,7 @@ class _HomeState extends State<Home>
     );
     roomController.dispose();
     keyController.dispose();
+    relayController.dispose();
     allowlistController.dispose();
     blocklistController.dispose();
     probeController.dispose();
@@ -6612,6 +6779,10 @@ class Controller extends ChangeNotifier {
   bool _dragOutCompatibilityMode = false;
   bool _handoffModeEnabled = false;
   bool _pairingRequired = false;
+  bool _relayModeEnabled = false;
+  final Set<String> _relayEndpoints = <String>{};
+  DateTime _lastRelayRefreshAt = DateTime.fromMillisecondsSinceEpoch(0);
+  bool _relayRefreshInFlight = false;
   final Map<String, HandoffRequest> _pendingHandoffRequests =
       <String, HandoffRequest>{};
   final Map<String, DateTime> _handoffApprovals = <String, DateTime>{};
@@ -6637,6 +6808,8 @@ class Controller extends ChangeNotifier {
   Set<String> get peerBlocklist => Set<String>.unmodifiable(_peerBlocklist);
   bool get handoffModeEnabled => _handoffModeEnabled;
   bool get pairingRequired => _pairingRequired;
+  bool get relayModeEnabled => _relayModeEnabled;
+  Set<String> get relayEndpoints => Set<String>.unmodifiable(_relayEndpoints);
   String get localFingerprint => buildPeerFingerprint(deviceId);
   List<PairingRequest> get pendingPairingRequests =>
       _pendingPairingRequests.values.toList(growable: false)
@@ -6901,6 +7074,33 @@ class Controller extends ChangeNotifier {
 
   void setDragOutCompatibilityMode(bool enabled) {
     _dragOutCompatibilityMode = enabled;
+  }
+
+  void setRelayConfig({required bool enabled, required Set<String> endpoints}) {
+    final normalized = <String>{};
+    for (final endpoint in endpoints) {
+      final parsed = parseRelayEndpointToken(endpoint);
+      if (parsed == null) continue;
+      normalized.add('${parsed.host}:${parsed.port}');
+    }
+    final changed =
+        _relayModeEnabled != enabled ||
+        !_stringSetEquals(normalized, _relayEndpoints);
+    if (!changed) return;
+    _relayModeEnabled = enabled;
+    _relayEndpoints
+      ..clear()
+      ..addAll(normalized);
+    if (!_relayModeEnabled) {
+      peers.removeWhere((_, peer) => peer.relayTargetId != null);
+      peerStatus.removeWhere((id, _) => !peers.containsKey(id));
+      peerHealth.removeWhere((id, _) => !peers.containsKey(id));
+    }
+    _lastRelayRefreshAt = DateTime.fromMillisecondsSinceEpoch(0);
+    notifyListeners();
+    if (_relayModeEnabled) {
+      unawaited(_refreshRelayPeers(force: true));
+    }
   }
 
   void setHandoffMode(bool enabled) {
@@ -7804,6 +8004,10 @@ class Controller extends ChangeNotifier {
           return 'Blocked by trust policy';
         }
         _applyManifestToPeer(addr: addr, port: port, manifest: manifest);
+        final endpointToken = '${addr.address}:$port';
+        if (_relayModeEnabled && _relayEndpoints.contains(endpointToken)) {
+          unawaited(_requestRelayPeers(addr, port));
+        }
         return 'Connected: ${manifest.name} (${manifest.items.length} items)';
       } finally {
         await s.close();
@@ -8142,6 +8346,9 @@ class Controller extends ChangeNotifier {
       unawaited(_fetchManifest(p));
     }
     _evaluateDiscoveryProfile();
+    if (_relayModeEnabled) {
+      unawaited(_refreshRelayPeers());
+    }
   }
 
   Future<void> runHealthCheck() async {
@@ -8555,6 +8762,8 @@ class Controller extends ChangeNotifier {
           ..addr = g.address
           ..port = port
           ..rev = rev
+          ..relayTargetId = null
+          ..relayHop = null
           ..lastSeen = now
           ..lastGoodContact = now;
 
@@ -8692,21 +8901,29 @@ class Controller extends ChangeNotifier {
     return true;
   }
 
-  Future<void> _sendManifestRequest(Socket s) async {
-    s.write(
-      jsonEncode(
-        _withAuth({
-          'type': 'manifest',
-          'room': _roomChannel,
-          'protocolMajor': _protocolMajor,
-          'protocolMinor': _protocolMinor,
-          'clientId': deviceId,
-          'clientName': deviceName,
-          'clientPort': listenPort,
-          'clientRevision': revision,
-        }),
-      ),
-    );
+  Future<void> _sendManifestRequest(
+    Socket s, {
+    String? relayTargetId,
+    String? clientId,
+    String? clientName,
+    int? clientPort,
+    int? clientRevision,
+  }) async {
+    final payload = <String, dynamic>{
+      'type': 'manifest',
+      'room': _roomChannel,
+      'protocolMajor': _protocolMajor,
+      'protocolMinor': _protocolMinor,
+      'clientId': clientId ?? deviceId,
+      'clientName': clientName ?? deviceName,
+      'clientPort': clientPort ?? listenPort,
+      'clientRevision': clientRevision ?? revision,
+    };
+    final relayTarget = relayTargetId?.trim();
+    if (relayTarget != null && relayTarget.isNotEmpty) {
+      payload['relayTargetId'] = relayTarget;
+    }
+    s.write(jsonEncode(_withAuth(payload)));
     s.write('\n');
     await s.flush();
   }
@@ -8755,6 +8972,8 @@ class Controller extends ChangeNotifier {
       ..addr = remoteAddress
       ..port = port
       ..rev = rev
+      ..relayTargetId = null
+      ..relayHop = null
       ..lastSeen = now
       ..lastGoodContact = now;
   }
@@ -8790,6 +9009,170 @@ class Controller extends ChangeNotifier {
               peerHealth[canonicalId]!.isEmpty)) {
         peerHealth[canonicalId] = health;
       }
+    }
+  }
+
+  Peer? _resolveRelayTargetPeer(String targetId) {
+    final direct = peers[targetId];
+    if (direct != null && direct.relayTargetId == null) {
+      return direct;
+    }
+    for (final peer in peers.values) {
+      if (peer.id == targetId && peer.relayTargetId == null) {
+        return peer;
+      }
+    }
+    return null;
+  }
+
+  bool _upsertRelayPeer({
+    required InternetAddress relayAddress,
+    required int relayPort,
+    required String targetPeerId,
+    required String targetName,
+    required int revision,
+  }) {
+    if (targetPeerId == deviceId) return false;
+    final existing = peers[targetPeerId];
+    if (existing != null && existing.relayTargetId == null) {
+      return false;
+    }
+    final now = DateTime.now();
+    final peer =
+        existing ??
+        Peer(
+          id: targetPeerId,
+          name: targetName,
+          addr: relayAddress,
+          port: relayPort,
+          rev: revision,
+          items: <RemoteItem>[],
+          lastSeen: now,
+          lastGoodContact: now,
+          relayTargetId: targetPeerId,
+          relayHop: '${relayAddress.address}:$relayPort',
+        );
+    peer
+      ..name = targetName
+      ..addr = relayAddress
+      ..port = relayPort
+      ..rev = max(peer.rev, revision)
+      ..relayTargetId = targetPeerId
+      ..relayHop = '${relayAddress.address}:$relayPort'
+      ..lastSeen = now
+      ..lastGoodContact = now;
+    peers[targetPeerId] = peer;
+    peerStatus[targetPeerId] = 'Via relay ${relayAddress.address}:$relayPort';
+    return true;
+  }
+
+  Future<void> _requestRelayPeers(
+    InternetAddress relayAddress,
+    int relayPort,
+  ) async {
+    if (!_relayModeEnabled) return;
+    try {
+      if (_shouldSimulateDrop('tcp_out_relay_peers')) return;
+      await _simulateLatency();
+      final socket = await Socket.connect(
+        relayAddress,
+        relayPort,
+        timeout: const Duration(seconds: 4),
+      );
+      try {
+        socket.write(
+          jsonEncode(
+            _withAuth({
+              'type': 'relay_peers',
+              'room': _roomChannel,
+              'protocolMajor': _protocolMajor,
+              'protocolMinor': _protocolMinor,
+              'clientId': deviceId,
+              'clientName': deviceName,
+              'clientPort': listenPort,
+              'clientRevision': revision,
+            }),
+          ),
+        );
+        socket.write('\n');
+        await socket.flush();
+        final line = await _readLine(
+          socket,
+        ).timeout(const Duration(seconds: 4));
+        final map = _decodeJsonMap(line);
+        if (map == null) return;
+        if (!_verifyAuth(map)) return;
+        if (!_isSameRoom(map['room'], countDiagnostics: false)) return;
+        if (map['type'] != 'relay_peers') return;
+        final peersList = map['peers'] as List<dynamic>? ?? const <dynamic>[];
+        var changed = false;
+        for (final rawEntry in peersList) {
+          if (rawEntry is! Map) continue;
+          final entry = <String, dynamic>{};
+          for (final kv in rawEntry.entries) {
+            if (kv.key is String) {
+              entry[kv.key as String] = kv.value;
+            }
+          }
+          final id = _safeString(entry['id'], maxChars: _maxPeerIdChars);
+          final name =
+              _safeString(entry['name'], maxChars: _maxPeerNameChars) ??
+              id ??
+              relayAddress.address;
+          final rev = _safeInt(entry['revision'], min: 0, max: 0x7fffffff) ?? 0;
+          if (id == null || id == deviceId) continue;
+          if (!_isPeerTrusted(
+            peerId: id,
+            peerName: name,
+            remoteAddress: relayAddress.address,
+            remotePort: relayPort,
+            countDiagnostics: false,
+          )) {
+            continue;
+          }
+          if (_upsertRelayPeer(
+            relayAddress: relayAddress,
+            relayPort: relayPort,
+            targetPeerId: id,
+            targetName: name,
+            revision: rev,
+          )) {
+            changed = true;
+          }
+        }
+        if (changed) {
+          notifyListeners();
+        }
+      } finally {
+        await socket.close();
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _refreshRelayPeers({bool force = false}) async {
+    if (!_relayModeEnabled || _relayEndpoints.isEmpty) return;
+    if (_relayRefreshInFlight) return;
+    final now = DateTime.now();
+    if (!force &&
+        now.difference(_lastRelayRefreshAt) < const Duration(seconds: 6)) {
+      return;
+    }
+    _lastRelayRefreshAt = now;
+    _relayRefreshInFlight = true;
+    try {
+      for (final endpoint in _relayEndpoints) {
+        final parsed = parseRelayEndpointToken(endpoint);
+        if (parsed == null) continue;
+        InternetAddress? addr;
+        try {
+          addr = InternetAddress(parsed.host);
+        } catch (_) {
+          continue;
+        }
+        await _requestRelayPeers(addr, parsed.port);
+      }
+    } finally {
+      _relayRefreshInFlight = false;
     }
   }
 
@@ -8960,6 +9343,171 @@ class Controller extends ChangeNotifier {
     }
   }
 
+  Future<void> _writeProtocolError(
+    Socket socket,
+    String message, {
+    String? code,
+  }) async {
+    socket.write(
+      jsonEncode(
+        _withAuth({
+          'type': 'error',
+          'room': _roomChannel,
+          if (code != null && code.isNotEmpty) 'code': code,
+          'message': message,
+        }),
+      ),
+    );
+    socket.write('\n');
+    await socket.flush();
+  }
+
+  Future<bool> _proxyManifestViaRelay({
+    required Socket clientSocket,
+    required Map<String, dynamic> request,
+    required String relayTargetId,
+  }) async {
+    if (!_relayModeEnabled) {
+      await _writeProtocolError(clientSocket, 'Relay mode is disabled');
+      return true;
+    }
+    final target = _resolveRelayTargetPeer(relayTargetId);
+    if (target == null) {
+      await _writeProtocolError(clientSocket, 'Relay target unavailable');
+      return true;
+    }
+    try {
+      final upstream = await Socket.connect(
+        target.addr,
+        target.port,
+        timeout: const Duration(seconds: 5),
+      );
+      try {
+        await _sendManifestRequest(
+          upstream,
+          clientId: _safeString(request['clientId'], maxChars: _maxPeerIdChars),
+          clientName: _safeString(
+            request['clientName'],
+            maxChars: _maxPeerNameChars,
+          ),
+          clientPort: _safeInt(request['clientPort'], min: 1, max: 65535),
+          clientRevision: _safeInt(
+            request['clientRevision'],
+            min: 0,
+            max: 0x7fffffff,
+          ),
+        );
+        final line = await _readLine(
+          upstream,
+        ).timeout(const Duration(seconds: 5));
+        final map = _decodeJsonMap(line);
+        if (map == null || !_verifyAuth(map)) {
+          await _writeProtocolError(clientSocket, 'Relay upstream auth failed');
+          return true;
+        }
+        if (!_isSameRoom(map['room'], countDiagnostics: false)) {
+          await _writeProtocolError(clientSocket, 'Relay room mismatch');
+          return true;
+        }
+        clientSocket.write(line);
+        clientSocket.write('\n');
+        await clientSocket.flush();
+        return true;
+      } finally {
+        await upstream.close();
+      }
+    } catch (e) {
+      await _writeProtocolError(clientSocket, 'Relay manifest failed: $e');
+      return true;
+    }
+  }
+
+  Future<bool> _proxyDownloadViaRelay({
+    required Socket clientSocket,
+    required Map<String, dynamic> request,
+    required String relayTargetId,
+    required String remoteIp,
+  }) async {
+    if (!_relayModeEnabled) {
+      await _writeProtocolError(clientSocket, 'Relay mode is disabled');
+      return true;
+    }
+    final target = _resolveRelayTargetPeer(relayTargetId);
+    if (target == null) {
+      await _writeProtocolError(clientSocket, 'Relay target unavailable');
+      return true;
+    }
+    final itemId = _safeString(request['id'], maxChars: 256);
+    if (itemId == null) {
+      await _writeProtocolError(clientSocket, 'Invalid download request');
+      return true;
+    }
+    final offset = _safeInt(request['offset'], min: 0, max: 0x7fffffff) ?? 0;
+    try {
+      final upstream = await Socket.connect(
+        target.addr,
+        target.port,
+        timeout: const Duration(seconds: 5),
+      );
+      try {
+        upstream.write(
+          jsonEncode(
+            _withAuth({
+              'type': 'download',
+              'room': _roomChannel,
+              'protocolMajor': _protocolMajor,
+              'protocolMinor': _protocolMinor,
+              'clientId':
+                  _safeString(request['clientId'], maxChars: _maxPeerIdChars) ??
+                  remoteIp,
+              'clientName':
+                  _safeString(
+                    request['clientName'],
+                    maxChars: _maxPeerNameChars,
+                  ) ??
+                  remoteIp,
+              'clientPort':
+                  _safeInt(request['clientPort'], min: 1, max: 65535) ??
+                  _transferPort,
+              'id': itemId,
+              'offset': offset,
+            }),
+          ),
+        );
+        upstream.write('\n');
+        await upstream.flush();
+
+        final header = await _readHeader(upstream);
+        final response = _decodeJsonMap(header.line);
+        if (response == null || !_verifyAuth(response)) {
+          await _writeProtocolError(clientSocket, 'Relay upstream auth failed');
+          return true;
+        }
+        if (!_isSameRoom(response['room'], countDiagnostics: false)) {
+          await _writeProtocolError(clientSocket, 'Relay room mismatch');
+          return true;
+        }
+        clientSocket.write(header.line);
+        clientSocket.write('\n');
+        if (response['type'] == 'file') {
+          if (header.rem.isNotEmpty) {
+            clientSocket.add(header.rem);
+          }
+          while (await header.it.moveNext()) {
+            clientSocket.add(header.it.current);
+          }
+        }
+        await clientSocket.flush();
+        return true;
+      } finally {
+        await upstream.close();
+      }
+    } catch (e) {
+      await _writeProtocolError(clientSocket, 'Relay download failed: $e');
+      return true;
+    }
+  }
+
   Future<void> _onClient(Socket s) async {
     final remoteIp = s.remoteAddress.address;
     if (_shouldSimulateDrop('tcp_inbound_accept')) {
@@ -9058,6 +9606,10 @@ class Controller extends ChangeNotifier {
       _learnPeerFromRequest(s.remoteAddress, req);
       final type = _safeString(req['type'], maxChars: 24);
       if (type == null) return;
+      final relayTargetId = _safeString(
+        req['relayTargetId'],
+        maxChars: _maxPeerIdChars,
+      );
       if (!_tcpRateLimiter.allow(
         'tcp-req:$remoteIp:$type',
         maxEvents: 200,
@@ -9077,6 +9629,59 @@ class Controller extends ChangeNotifier {
         s.write('\n');
         await s.flush();
         return;
+      }
+      if (type == 'relay_peers') {
+        if (!_relayModeEnabled) {
+          await _writeProtocolError(s, 'Relay mode is disabled');
+          return;
+        }
+        final relayPeers = peers.values
+            .where((peer) => peer.relayTargetId == null)
+            .map(
+              (peer) => <String, dynamic>{
+                'id': peer.id,
+                'name': peer.name,
+                'revision': peer.rev,
+                'address': peer.addr.address,
+                'port': peer.port,
+              },
+            )
+            .toList(growable: false);
+        s.write(
+          jsonEncode(
+            _withAuth({
+              'type': 'relay_peers',
+              'room': _roomChannel,
+              'protocolMajor': _protocolMajor,
+              'protocolMinor': _protocolMinor,
+              'peers': relayPeers,
+            }),
+          ),
+        );
+        s.write('\n');
+        await s.flush();
+        return;
+      }
+      if (relayTargetId != null &&
+          relayTargetId.isNotEmpty &&
+          relayTargetId != deviceId) {
+        if (type == 'manifest') {
+          await _proxyManifestViaRelay(
+            clientSocket: s,
+            request: req,
+            relayTargetId: relayTargetId,
+          );
+          return;
+        }
+        if (type == 'download') {
+          await _proxyDownloadViaRelay(
+            clientSocket: s,
+            request: req,
+            relayTargetId: relayTargetId,
+            remoteIp: remoteIp,
+          );
+          return;
+        }
       }
       if (type == 'manifest') {
         final manifestItems = _local.values
@@ -9361,6 +9966,7 @@ class Controller extends ChangeNotifier {
             'clientPort': listenPort,
             'id': it.itemId,
             'offset': max(0, initialOffsetBytes),
+            if (peer.relayTargetId != null) 'relayTargetId': peer.relayTargetId,
           }),
         ),
       );
@@ -10007,6 +10613,8 @@ class AppSettings {
     this.startInTrayOnLaunch = false,
     this.sendToIntegrationEnabled = false,
     this.dragOutCompatibilityMode = false,
+    this.relayModeEnabled = false,
+    this.relayEndpoints = '',
     this.handoffModeEnabled = false,
     this.pairingRequired = false,
     this.roomChannel = '',
@@ -10031,6 +10639,8 @@ class AppSettings {
   final bool startInTrayOnLaunch;
   final bool sendToIntegrationEnabled;
   final bool dragOutCompatibilityMode;
+  final bool relayModeEnabled;
+  final String relayEndpoints;
   final bool handoffModeEnabled;
   final bool pairingRequired;
   final String roomChannel;
@@ -10055,6 +10665,8 @@ class AppSettings {
     'startInTrayOnLaunch': startInTrayOnLaunch,
     'sendToIntegrationEnabled': sendToIntegrationEnabled,
     'dragOutCompatibilityMode': dragOutCompatibilityMode,
+    'relayModeEnabled': relayModeEnabled,
+    'relayEndpoints': relayEndpoints,
     'handoffModeEnabled': handoffModeEnabled,
     'pairingRequired': pairingRequired,
     'roomChannel': roomChannel,
@@ -10085,6 +10697,10 @@ class AppSettings {
       startInTrayOnLaunch: json['startInTrayOnLaunch'] == true,
       sendToIntegrationEnabled: json['sendToIntegrationEnabled'] == true,
       dragOutCompatibilityMode: json['dragOutCompatibilityMode'] == true,
+      relayModeEnabled: json['relayModeEnabled'] == true,
+      relayEndpoints: relayEndpointsToText(
+        parseRelayEndpointInput(json['relayEndpoints'] as String? ?? ''),
+      ),
       handoffModeEnabled: json['handoffModeEnabled'] == true,
       pairingRequired: json['pairingRequired'] == true,
       roomChannel: normalizeRoomChannel((json['roomChannel'] as String? ?? '')),
@@ -10987,6 +11603,8 @@ class Peer {
     required this.items,
     required this.lastSeen,
     required this.lastGoodContact,
+    this.relayTargetId,
+    this.relayHop,
   });
 
   final String id;
@@ -10997,6 +11615,8 @@ class Peer {
   List<RemoteItem> items;
   DateTime lastSeen;
   DateTime lastGoodContact;
+  String? relayTargetId;
+  String? relayHop;
   bool fetching = false;
   bool hasManifest = false;
   DateTime lastFetch = DateTime.fromMillisecondsSinceEpoch(0);

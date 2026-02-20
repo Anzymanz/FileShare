@@ -207,4 +207,17 @@ void main() {
     final restored = AppSettings.fromJson(settings.toJson());
     expect(restored.pairingRequired, isTrue);
   });
+
+  test('AppSettings serializes relay mode settings', () {
+    const settings = AppSettings(
+      darkMode: true,
+      themeIndex: 0,
+      soundOnNudge: false,
+      relayModeEnabled: true,
+      relayEndpoints: '192.168.0.10:40406\n192.168.0.11:5000',
+    );
+    final restored = AppSettings.fromJson(settings.toJson());
+    expect(restored.relayModeEnabled, isTrue);
+    expect(restored.relayEndpoints, '192.168.0.10:40406\n192.168.0.11:5000');
+  });
 }

@@ -209,6 +209,18 @@ void main() {
     expect(a, matches(RegExp(r'^[A-F0-9]{4}(-[A-F0-9]{4}){3}$')));
   });
 
+  test('parseRelayEndpointInput normalizes and filters invalid endpoints', () {
+    final parsed = parseRelayEndpointInput(
+      '192.168.0.10; 192.168.0.11:5000 invalid 10.0.0.1:70000',
+    );
+    expect(parsed, {'192.168.0.10:40406', '192.168.0.11:5000'});
+    expect(parseRelayEndpointToken('192.168.1.50:40406'), (
+      host: '192.168.1.50',
+      port: 40406,
+    ));
+    expect(parseRelayEndpointToken('bad-host'), isNull);
+  });
+
   test('summarizeSelectedItems splits local/remote and owner targets', () {
     final local = _item(
       ownerId: 'local',
