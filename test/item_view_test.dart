@@ -174,4 +174,11 @@ void main() {
     expect(split.pinned.map((e) => e.name).toList(), ['b.txt']);
     expect(split.others.map((e) => e.name).toList(), ['a.txt', 'c.txt']);
   });
+
+  test('buildClipboardShareName returns stable timestamped txt filename', () {
+    final name = buildClipboardShareName(
+      DateTime(2026, 2, 20, 15, 4, 9),
+    );
+    expect(name, 'Clipboard_20260220_150409.txt');
+  });
 }

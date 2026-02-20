@@ -12,6 +12,7 @@ import 'package:crypto/crypto.dart' as crypto;
 import 'package:ffi/ffi.dart';
 import 'package:file_selector/file_selector.dart' as fs;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:local_notifier/local_notifier.dart';
 import 'package:fileshare/network_validation.dart' as nv;
 import 'package:path/path.dart' as p;
@@ -387,6 +388,13 @@ List<ShareItem> computeVisibleItems({
   });
 
   return filtered;
+}
+
+String buildClipboardShareName(DateTime now) {
+  String two(int v) => v.toString().padLeft(2, '0');
+  final datePart =
+      '${now.year}${two(now.month)}${two(now.day)}_${two(now.hour)}${two(now.minute)}${two(now.second)}';
+  return 'Clipboard_$datePart.txt';
 }
 
 List<String> buildSubnetSweepTargets(
@@ -907,6 +915,31 @@ class _HomeState extends State<Home>
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('Download failed: $e')));
+    }
+  }
+
+  Future<void> _shareClipboardTextAsItem() async {
+    try {
+      final data = await Clipboard.getData(Clipboard.kTextPlain);
+      final text = data?.text ?? '';
+      if (text.trim().isEmpty) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Clipboard text is empty')),
+        );
+        return;
+      }
+      final name = buildClipboardShareName(DateTime.now());
+      await c.addClipboardText(text, fileName: name);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Shared clipboard text as $name')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Clipboard share failed: $e')),
+      );
     }
   }
 
@@ -1522,6 +1555,8 @@ class _HomeState extends State<Home>
                                     onIconSizeChanged: (value) {
                                       setState(() => _iconSize = value);
                                     },
+                                    onShareClipboardText:
+                                        _shareClipboardTextAsItem,
                                   ),
                                   const SizedBox(height: 8),
                                   Expanded(
@@ -2402,6 +2437,7 @@ class _ExplorerToolbar extends StatelessWidget {
     required this.onToggleLayoutMode,
     required this.iconSize,
     required this.onIconSizeChanged,
+    required this.onShareClipboardText,
   });
 
   final TextEditingController searchController;
@@ -2416,6 +2452,7 @@ class _ExplorerToolbar extends StatelessWidget {
   final VoidCallback onToggleLayoutMode;
   final double iconSize;
   final ValueChanged<double> onIconSizeChanged;
+  final Future<void> Function() onShareClipboardText;
 
   @override
   Widget build(BuildContext context) {
@@ -2494,6 +2531,11 @@ class _ExplorerToolbar extends StatelessWidget {
                     layoutMode == ItemLayoutMode.grid ? 'List' : 'Grid',
                   ),
                 ),
+              ),
+              OutlinedButton.icon(
+                onPressed: () => unawaited(onShareClipboardText()),
+                icon: const Icon(Icons.content_paste_rounded, size: 16),
+                label: const Text('Share Clipboard'),
               ),
               SizedBox(
                 width: 220,
@@ -3885,6 +3927,33 @@ class Controller extends ChangeNotifier {
       if (_shouldSimulateDrop('udp_out_nudge')) continue;
       u.send(payloadBytes, p.addr, _discoveryPort);
       unawaited(_sendNudgeTcp(p, payloadMap));
+    }
+  }
+
+  Future<void> addClipboardText(String text, {String? fileName}) async {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) return;
+    final appDir = await _appDataDir();
+    final clipDir = Directory(p.join(appDir.path, 'clipboard'));
+    await clipDir.create(recursive: true);
+    final base = _safeFileName((fileName ?? buildClipboardShareName(DateTime.now())).trim());
+    final candidateBase = base.toLowerCase().endsWith('.txt') ? base : '$base.txt';
+    var target = File(p.join(clipDir.path, candidateBase));
+    var counter = 2;
+    while (await target.exists()) {
+      final ext = p.extension(candidateBase);
+      final stem = ext.isEmpty
+          ? candidateBase
+          : candidateBase.substring(0, candidateBase.length - ext.length);
+      target = File(p.join(clipDir.path, '$stem ($counter)$ext'));
+      counter++;
+    }
+    await target.writeAsString(trimmed, flush: true);
+    final changed = await _addPath(target.path);
+    if (changed) {
+      revision++;
+      _broadcast();
+      notifyListeners();
     }
   }
 
