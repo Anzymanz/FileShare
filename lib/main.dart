@@ -58,6 +58,10 @@ const Size _minWindowSize = Size(420, 280);
 const Size _defaultWindowSize = Size(900, 600);
 const Duration _announceInterval = Duration(milliseconds: 700);
 const Duration _refreshInterval = Duration(milliseconds: 350);
+const Duration _announceIntervalHighReliability = Duration(milliseconds: 450);
+const Duration _refreshIntervalHighReliability = Duration(milliseconds: 220);
+const Duration _announceIntervalLowTraffic = Duration(milliseconds: 1400);
+const Duration _refreshIntervalLowTraffic = Duration(milliseconds: 800);
 const Duration _minFetchInterval = Duration(milliseconds: 280);
 const Duration _pruneInterval = Duration(seconds: 3);
 const Duration _peerPruneAfter = Duration(seconds: 45);
@@ -135,6 +139,8 @@ enum ItemLayoutMode { grid, list }
 
 enum UpdateChannel { stable, beta, nightly }
 
+enum DiscoveryProfile { highReliability, balanced, lowTraffic }
+
 String itemSourceFilterLabel(ItemSourceFilter filter) {
   switch (filter) {
     case ItemSourceFilter.all:
@@ -189,6 +195,31 @@ String updateChannelLabel(UpdateChannel channel) {
     case UpdateChannel.nightly:
       return 'Nightly';
   }
+}
+
+String discoveryProfileLabel(DiscoveryProfile profile) {
+  switch (profile) {
+    case DiscoveryProfile.highReliability:
+      return 'High reliability';
+    case DiscoveryProfile.balanced:
+      return 'Balanced';
+    case DiscoveryProfile.lowTraffic:
+      return 'Low traffic';
+  }
+}
+
+DiscoveryProfile selectDiscoveryProfile({
+  required int connectedPeers,
+  required int repeatedFetchFailures,
+  required int rateLimitEvents,
+}) {
+  if (connectedPeers == 0 || repeatedFetchFailures > 0) {
+    return DiscoveryProfile.highReliability;
+  }
+  if (connectedPeers >= 4 || rateLimitEvents >= 40) {
+    return DiscoveryProfile.lowTraffic;
+  }
+  return DiscoveryProfile.balanced;
 }
 
 UpdateChannel updateChannelFromString(String? value) {
@@ -1670,6 +1701,9 @@ class _HomeState extends State<Home>
                   Text('IP: $localIpSummary'),
                   Text('Port: ${c.listenPort}'),
                   Text('Protocol: $_protocolMajor.$_protocolMinor'),
+                  Text(
+                    'Discovery Profile: ${discoveryProfileLabel(c.discoveryProfile)}',
+                  ),
                   const SizedBox(height: 8),
                   const Text('Room Key (optional)'),
                   const SizedBox(height: 6),
@@ -3514,6 +3548,8 @@ class Controller extends ChangeNotifier {
   String _sharedRoomKey = '';
   bool _autoUpdateChecks = false;
   UpdateChannel _updateChannel = UpdateChannel.stable;
+  DiscoveryProfile _discoveryProfile = DiscoveryProfile.balanced;
+  DateTime _lastDiscoveryProfileEval = DateTime.fromMillisecondsSinceEpoch(0);
   String? latestReleaseTag;
   String? latestReleaseUrl;
   final int _simulatedLatencyMs = max(
@@ -3543,6 +3579,7 @@ class Controller extends ChangeNotifier {
 
   Map<String, int> get networkDiagnostics =>
       Map<String, int>.unmodifiable(_networkDiagnostics);
+  DiscoveryProfile get discoveryProfile => _discoveryProfile;
   bool get latencyProfilingEnabled => _latencyProfilingEnabled;
   Map<String, Duration> get peerFirstSyncLatency =>
       Map<String, Duration>.unmodifiable(_peerFirstSyncLatency);
@@ -3600,6 +3637,69 @@ class Controller extends ChangeNotifier {
       _peerFirstSeenAt.clear();
       _peerFirstSyncLatency.clear();
     }
+  }
+
+  Duration _announceIntervalForProfile(DiscoveryProfile profile) {
+    switch (profile) {
+      case DiscoveryProfile.highReliability:
+        return _announceIntervalHighReliability;
+      case DiscoveryProfile.balanced:
+        return _announceInterval;
+      case DiscoveryProfile.lowTraffic:
+        return _announceIntervalLowTraffic;
+    }
+  }
+
+  Duration _refreshIntervalForProfile(DiscoveryProfile profile) {
+    switch (profile) {
+      case DiscoveryProfile.highReliability:
+        return _refreshIntervalHighReliability;
+      case DiscoveryProfile.balanced:
+        return _refreshInterval;
+      case DiscoveryProfile.lowTraffic:
+        return _refreshIntervalLowTraffic;
+    }
+  }
+
+  void _startDiscoveryTimers() {
+    _announce?.cancel();
+    _refresh?.cancel();
+    _announce = Timer.periodic(
+      _announceIntervalForProfile(_discoveryProfile),
+      (_) => _broadcast(),
+    );
+    _refresh = Timer.periodic(
+      _refreshIntervalForProfile(_discoveryProfile),
+      (_) => refreshAll(),
+    );
+  }
+
+  void _evaluateDiscoveryProfile({bool force = false}) {
+    final now = DateTime.now();
+    if (!force &&
+        now.difference(_lastDiscoveryProfileEval) <
+            const Duration(seconds: 3)) {
+      return;
+    }
+    _lastDiscoveryProfileEval = now;
+    var repeatedFailures = 0;
+    for (final peer in peers.values) {
+      if (peer.fetchFailureStreak >= 3) {
+        repeatedFailures++;
+      }
+    }
+    final rateLimitEvents =
+        (_networkDiagnostics['udp_rate_limited'] ?? 0) +
+        (_networkDiagnostics['tcp_req_rate_limited'] ?? 0);
+    final next = selectDiscoveryProfile(
+      connectedPeers: connectedPeerCount,
+      repeatedFetchFailures: repeatedFailures,
+      rateLimitEvents: rateLimitEvents,
+    );
+    if (next == _discoveryProfile) return;
+    _discoveryProfile = next;
+    _startDiscoveryTimers();
+    notifyListeners();
   }
 
   Future<String> checkForUpdates() async {
@@ -3807,8 +3907,7 @@ class Controller extends ChangeNotifier {
     }
     _udp!.listen(_onUdp);
 
-    _announce = Timer.periodic(_announceInterval, (_) => _broadcast());
-    _refresh = Timer.periodic(_refreshInterval, (_) => refreshAll());
+    _startDiscoveryTimers();
     _prune = Timer.periodic(_pruneInterval, (_) => _prunePeers());
     _housekeeping = Timer.periodic(
       _housekeepingInterval,
@@ -3816,6 +3915,7 @@ class Controller extends ChangeNotifier {
     );
 
     await _loadIps();
+    _evaluateDiscoveryProfile(force: true);
     unawaited(_cleanupDragCache());
     if (_autoUpdateChecks) {
       unawaited(checkForUpdates());
@@ -4337,6 +4437,7 @@ class Controller extends ChangeNotifier {
       if (now.difference(p.lastFetch) < _minFetchInterval) continue;
       unawaited(_fetchManifest(p));
     }
+    _evaluateDiscoveryProfile();
   }
 
   Future<void> runHealthCheck() async {
@@ -4692,6 +4793,7 @@ class Controller extends ChangeNotifier {
       peerStatus.remove(id);
       peerHealth.remove(id);
     }
+    _evaluateDiscoveryProfile(force: true);
     notifyListeners();
   }
 
