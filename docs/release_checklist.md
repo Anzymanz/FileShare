@@ -5,6 +5,8 @@
 - Confirm `main` is up to date and builds locally.
 - Run readiness dashboard:
   - `powershell -ExecutionPolicy Bypass -File scripts/release_dashboard.ps1`
+- Optional benchmark pass for large files:
+  - `powershell -ExecutionPolicy Bypass -File scripts/benchmark_suite.ps1 -ExePath .\build\windows\x64\runner\Release\fileshare.exe`
 - Verify `flutter analyze` passes.
 - Verify Windows release build succeeds.
 - Review `README.md` install instructions for accuracy.
