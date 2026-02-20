@@ -7969,6 +7969,7 @@ class Controller extends ChangeNotifier {
     String outputPath, {
     bool allowOverwrite = false,
     DuplicateHandlingMode duplicateHandlingMode = DuplicateHandlingMode.rename,
+    bool allowResume = true,
     void Function(String transferId)? onTransferStart,
   }) async {
     if (item.local) {
@@ -7995,12 +7996,29 @@ class Controller extends ChangeNotifier {
       }
     }
     final temp = File('${target.path}.fileshare.part');
-    if (await temp.exists()) {
+    var resumeOffset = 0;
+    if (allowResume && await temp.exists()) {
+      try {
+        final existing = await temp.length();
+        if (existing > 0 && existing < item.size) {
+          resumeOffset = existing;
+        } else if (existing >= item.size || existing < 0) {
+          await temp.delete();
+        }
+      } catch (_) {
+        try {
+          await temp.delete();
+        } catch (_) {}
+      }
+    } else if (await temp.exists()) {
       await temp.delete();
     }
     String? transferId;
-    final sink = temp.openWrite(mode: FileMode.writeOnly);
+    IOSink? sink;
     try {
+      sink = temp.openWrite(
+        mode: resumeOffset > 0 ? FileMode.append : FileMode.writeOnly,
+      );
       final completed = await _streamRemote(
         item,
         sink,
@@ -8009,14 +8027,29 @@ class Controller extends ChangeNotifier {
           transferId = id;
           onTransferStart?.call(id);
         },
+        initialOffsetBytes: resumeOffset,
+        verifyChecksum: resumeOffset <= 0,
       );
       await sink.flush();
       await sink.close();
+      sink = null;
       if (!completed) {
-        if (await temp.exists()) {
+        if (!allowResume && await temp.exists()) {
           await temp.delete();
         }
         throw _TransferCanceledException();
+      }
+      final expectedSha256 = normalizeSha256Hex(item.sha256);
+      if (expectedSha256 != null && resumeOffset > 0) {
+        final actualSha256 = await _computeFileSha256Hex(temp.path);
+        if (actualSha256 == null) {
+          _incDiagnostic('checksum_missing');
+          throw Exception('Checksum unavailable');
+        }
+        if (actualSha256 != expectedSha256) {
+          _incDiagnostic('checksum_mismatch');
+          throw Exception('Checksum mismatch');
+        }
       }
       if (await target.exists()) {
         await target.delete();
@@ -8030,12 +8063,57 @@ class Controller extends ChangeNotifier {
         }
       }
       return true;
+    } on _ResumeNotSupportedException {
+      if (!allowResume || resumeOffset <= 0) {
+        rethrow;
+      }
+      try {
+        if (sink != null) {
+          await sink.flush();
+          await sink.close();
+        }
+      } catch (_) {}
+      if (await temp.exists()) {
+        await temp.delete();
+      }
+      return await downloadRemoteToPath(
+        item,
+        outputPath,
+        allowOverwrite: allowOverwrite,
+        duplicateHandlingMode: duplicateHandlingMode,
+        allowResume: false,
+        onTransferStart: onTransferStart,
+      );
+    } on _ResumeOffsetMismatchException {
+      if (!allowResume || resumeOffset <= 0) {
+        rethrow;
+      }
+      try {
+        if (sink != null) {
+          await sink.flush();
+          await sink.close();
+        }
+      } catch (_) {}
+      if (await temp.exists()) {
+        await temp.delete();
+      }
+      return await downloadRemoteToPath(
+        item,
+        outputPath,
+        allowOverwrite: allowOverwrite,
+        duplicateHandlingMode: duplicateHandlingMode,
+        allowResume: false,
+        onTransferStart: onTransferStart,
+      );
     } catch (e) {
       try {
-        await sink.close();
+        if (sink != null) {
+          await sink.flush();
+          await sink.close();
+        }
       } catch (_) {}
       try {
-        if (await temp.exists()) {
+        if (!allowResume && await temp.exists()) {
           await temp.delete();
         }
       } catch (_) {}
@@ -8720,6 +8798,7 @@ class Controller extends ChangeNotifier {
     required String peerName,
     required TransferDirection direction,
     required int totalBytes,
+    int initialTransferredBytes = 0,
   }) {
     _transferCounter++;
     final id = '${DateTime.now().microsecondsSinceEpoch}-$_transferCounter';
@@ -8730,6 +8809,7 @@ class Controller extends ChangeNotifier {
       peerName: peerName,
       direction: direction,
       totalBytes: totalBytes,
+      initialTransferredBytes: initialTransferredBytes,
       startedAt: DateTime.now(),
     );
     unawaited(
@@ -8739,6 +8819,7 @@ class Controller extends ChangeNotifier {
         'name': name,
         'peerName': peerName,
         'totalBytes': totalBytes,
+        'initialTransferredBytes': initialTransferredBytes,
       }),
     );
     _notifyTransferListeners(force: true);
@@ -9036,6 +9117,8 @@ class Controller extends ChangeNotifier {
       if (type == 'download') {
         final id = _safeString(req['id'], maxChars: 256);
         if (id == null) return;
+        final requestedOffset =
+            _safeInt(req['offset'], min: 0, max: 0x7fffffff) ?? 0;
         final peerId =
             _safeString(req['clientId'], maxChars: _maxPeerIdChars) ?? '';
         final peerName =
@@ -9058,6 +9141,21 @@ class Controller extends ChangeNotifier {
           await s.flush();
           return;
         }
+        if (requestedOffset > item.size) {
+          s.write(
+            jsonEncode(
+              _withAuth({
+                'type': 'error',
+                'room': _roomChannel,
+                'message': 'Invalid resume offset',
+              }),
+            ),
+          );
+          s.write('\n');
+          await s.flush();
+          return;
+        }
+        final startOffset = requestedOffset.clamp(0, item.size).toInt();
         final file = File(item.path);
         if (!await file.exists()) {
           s.write(
@@ -9135,6 +9233,7 @@ class Controller extends ChangeNotifier {
               'name': item.name,
               'relativePath': item.rel,
               'size': item.size,
+              'offset': startOffset,
               'sha256': sha256,
             }),
           ),
@@ -9145,10 +9244,10 @@ class Controller extends ChangeNotifier {
           name: item.rel,
           peerName: peerName,
           direction: TransferDirection.upload,
-          totalBytes: item.size,
+          totalBytes: item.size - startOffset,
         );
         try {
-          await for (final chunk in file.openRead()) {
+          await for (final chunk in file.openRead(startOffset)) {
             await _uploadRateLimiter.consume(
               peerKey,
               chunk.length,
@@ -9227,6 +9326,8 @@ class Controller extends ChangeNotifier {
     EventSink sink,
     bool Function() canceled, {
     void Function(String transferId)? onTransferStart,
+    int initialOffsetBytes = 0,
+    bool verifyChecksum = true,
   }) async {
     final peer = peers[it.peerId];
     if (peer == null) throw Exception('Peer not found');
@@ -9259,6 +9360,7 @@ class Controller extends ChangeNotifier {
             'clientName': deviceName,
             'clientPort': listenPort,
             'id': it.itemId,
+            'offset': max(0, initialOffsetBytes),
           }),
         ),
       );
@@ -9282,13 +9384,29 @@ class Controller extends ChangeNotifier {
       }
       if (m['type'] != 'file') throw Exception('Bad response');
       final totalBytes = (m['size'] as num).toInt();
+      final streamOffset =
+          _safeInt(m['offset'], min: 0, max: max(0, totalBytes)) ?? 0;
+      if (streamOffset > totalBytes) {
+        throw Exception('Invalid remote stream offset');
+      }
+      if (initialOffsetBytes > 0 && streamOffset == 0) {
+        throw _ResumeNotSupportedException();
+      }
+      if (initialOffsetBytes > 0 && streamOffset != initialOffsetBytes) {
+        throw _ResumeOffsetMismatchException(
+          expectedOffset: initialOffsetBytes,
+          actualOffset: streamOffset,
+        );
+      }
       final expectedSha256 =
           normalizeSha256Hex(m['sha256']) ?? normalizeSha256Hex(it.sha256);
-      final hashSink = _DigestSink();
-      final hashConverter = crypto.sha256.startChunkedConversion(hashSink);
-      var hashClosed = false;
+      final hashSink = verifyChecksum ? _DigestSink() : null;
+      final hashConverter = verifyChecksum
+          ? crypto.sha256.startChunkedConversion(hashSink!)
+          : null;
+      var hashClosed = !verifyChecksum;
       void closeHash() {
-        if (hashClosed) return;
+        if (hashClosed || hashConverter == null) return;
         hashConverter.close();
         hashClosed = true;
       }
@@ -9298,6 +9416,7 @@ class Controller extends ChangeNotifier {
         peerName: peer.name,
         direction: TransferDirection.download,
         totalBytes: totalBytes,
+        initialTransferredBytes: streamOffset,
       );
       onTransferStart?.call(transferId);
       if (!_acquirePeerSlot(
@@ -9314,7 +9433,7 @@ class Controller extends ChangeNotifier {
         throw Exception('Too many concurrent downloads for this peer');
       }
       try {
-        var left = totalBytes;
+        var left = totalBytes - streamOffset;
         if (h.rem.isNotEmpty) {
           final n = min(left, h.rem.length);
           if (n > 0 &&
@@ -9332,7 +9451,7 @@ class Controller extends ChangeNotifier {
               _globalRateLimitBytesPerSecond,
             );
             sink.add(payload);
-            hashConverter.add(payload);
+            hashConverter?.add(payload);
             _addTransferProgress(transferId, n);
           }
           left -= n;
@@ -9356,7 +9475,7 @@ class Controller extends ChangeNotifier {
               _globalRateLimitBytesPerSecond,
             );
             sink.add(payload);
-            hashConverter.add(payload);
+            hashConverter?.add(payload);
             _addTransferProgress(transferId, n);
           }
           left -= n;
@@ -9376,8 +9495,8 @@ class Controller extends ChangeNotifier {
           throw Exception('Transfer interrupted');
         }
         closeHash();
-        if (expectedSha256 != null) {
-          final actualSha256 = hashSink.value?.toString();
+        if (verifyChecksum && expectedSha256 != null) {
+          final actualSha256 = hashSink?.value?.toString();
           if (actualSha256 == null) {
             _incDiagnostic('checksum_missing');
             throw Exception('Checksum unavailable');
@@ -10563,6 +10682,26 @@ class _TransferCanceledException implements Exception {
   String toString() => 'Transfer canceled';
 }
 
+class _ResumeNotSupportedException implements Exception {
+  @override
+  String toString() => 'Peer does not support resume';
+}
+
+class _ResumeOffsetMismatchException implements Exception {
+  _ResumeOffsetMismatchException({
+    required this.expectedOffset,
+    required this.actualOffset,
+  });
+
+  final int expectedOffset;
+  final int actualOffset;
+
+  @override
+  String toString() {
+    return 'Resume offset mismatch: expected $expectedOffset, got $actualOffset';
+  }
+}
+
 enum PeerState { discovered, syncing, reachable, stale }
 
 enum PeerAvailability { active, away, idle }
@@ -10680,8 +10819,19 @@ class TransferEntry {
     required this.direction,
     required this.totalBytes,
     required this.startedAt,
+    this.initialTransferredBytes = 0,
   }) : updatedAt = startedAt,
-       _sampleAt = startedAt;
+       transferredBytes = initialTransferredBytes < 0
+           ? 0
+           : (initialTransferredBytes > totalBytes
+                 ? totalBytes
+                 : initialTransferredBytes),
+       _sampleAt = startedAt,
+       _sampleBytes = initialTransferredBytes < 0
+           ? 0
+           : (initialTransferredBytes > totalBytes
+                 ? totalBytes
+                 : initialTransferredBytes);
 
   final String id;
   final String name;
@@ -10689,15 +10839,16 @@ class TransferEntry {
   final TransferDirection direction;
   final int totalBytes;
   final DateTime startedAt;
+  final int initialTransferredBytes;
   DateTime updatedAt;
-  int transferredBytes = 0;
+  int transferredBytes;
   double speedBytesPerSecond = 0;
   TransferState state = TransferState.running;
   String? error;
   String? outputPath;
 
   DateTime _sampleAt;
-  int _sampleBytes = 0;
+  int _sampleBytes;
 
   Duration? get eta {
     final speed = speedBytesPerSecond;

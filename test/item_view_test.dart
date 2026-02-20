@@ -381,6 +381,33 @@ void main() {
     },
   );
 
+  test(
+    'TransferEntry clamps initial transferred bytes for resume progress',
+    () {
+      final resumed = TransferEntry(
+        id: 't-resume',
+        name: 'resume.bin',
+        peerName: 'Peer',
+        direction: TransferDirection.download,
+        totalBytes: 100,
+        startedAt: DateTime.now(),
+        initialTransferredBytes: 45,
+      );
+      expect(resumed.transferredBytes, 45);
+
+      final oversized = TransferEntry(
+        id: 't-oversized',
+        name: 'oversized.bin',
+        peerName: 'Peer',
+        direction: TransferDirection.download,
+        totalBytes: 100,
+        startedAt: DateTime.now(),
+        initialTransferredBytes: 999,
+      );
+      expect(oversized.transferredBytes, 100);
+    },
+  );
+
   test('parseLaunchSharePaths filters flags and de-duplicates paths', () {
     final parsed = parseLaunchSharePaths([
       '--start-in-tray',
