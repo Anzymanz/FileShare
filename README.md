@@ -40,5 +40,5 @@ flutter run -d windows
 ## Build Installer
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\build_installer.ps1 --app-version 0.0.4
+powershell -ExecutionPolicy Bypass -File .\scripts\build_installer.ps1 --app-version 0.0.3
 ```
