@@ -105,4 +105,31 @@ void main() {
     final restored = AppSettings.fromJson(settings.toJson());
     expect(restored.showPreviewPanel, isTrue);
   });
+
+  test('AppSettings serializes window layout presets', () {
+    const settings = AppSettings(
+      darkMode: true,
+      themeIndex: 0,
+      soundOnNudge: false,
+      windowLayoutPresets: <WindowLayoutPreset>[
+        WindowLayoutPreset(
+          slot: 1,
+          left: 10,
+          top: 20,
+          width: 900,
+          height: 600,
+          maximized: false,
+          savedAtEpochMs: 123,
+          displayHint: 'Center 450,320',
+        ),
+      ],
+    );
+    final restored = AppSettings.fromJson(settings.toJson());
+    expect(restored.windowLayoutPresets.length, 1);
+    final preset = restored.windowLayoutPresets.first;
+    expect(preset.slot, 1);
+    expect(preset.width, 900);
+    expect(preset.height, 600);
+    expect(preset.displayHint, 'Center 450,320');
+  });
 }

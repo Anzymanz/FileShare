@@ -277,4 +277,44 @@ void main() {
     expect(supportsInlinePreviewForName('doc.pdf'), isTrue);
     expect(supportsInlinePreviewForName('video.mp4'), isFalse);
   });
+
+  test('window layout preset helpers upsert/remove/lookup by slot', () {
+    final a = WindowLayoutPreset(
+      slot: 1,
+      left: 0,
+      top: 0,
+      width: 800,
+      height: 500,
+      maximized: false,
+    );
+    final b = WindowLayoutPreset(
+      slot: 2,
+      left: 100,
+      top: 50,
+      width: 1000,
+      height: 700,
+      maximized: true,
+    );
+    final merged = upsertWindowLayoutPreset([a], b);
+    expect(merged.length, 2);
+    expect(windowLayoutPresetForSlot(merged, 2)?.maximized, isTrue);
+
+    final replaced = upsertWindowLayoutPreset(
+      merged,
+      const WindowLayoutPreset(
+        slot: 2,
+        left: 200,
+        top: 120,
+        width: 1200,
+        height: 800,
+        maximized: false,
+      ),
+    );
+    expect(windowLayoutPresetForSlot(replaced, 2)?.left, 200);
+    expect(windowLayoutPresetForSlot(replaced, 2)?.maximized, isFalse);
+
+    final removed = removeWindowLayoutPreset(replaced, 1);
+    expect(windowLayoutPresetForSlot(removed, 1), isNull);
+    expect(windowLayoutPresetForSlot(removed, 2), isNotNull);
+  });
 }

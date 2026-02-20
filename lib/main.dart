@@ -59,6 +59,7 @@ const Duration _dragCacheMaxAge = Duration(days: 7);
 const Duration _housekeepingInterval = Duration(minutes: 15);
 const Size _minWindowSize = Size(420, 280);
 const Size _defaultWindowSize = Size(900, 600);
+const List<int> _windowLayoutPresetSlots = <int>[1, 2, 3];
 const Duration _announceInterval = Duration(milliseconds: 700);
 const Duration _refreshInterval = Duration(milliseconds: 350);
 const Duration _announceIntervalHighReliability = Duration(milliseconds: 450);
@@ -639,6 +640,167 @@ String normalizeRoomChannel(String raw) {
   return cleaned.substring(0, 64);
 }
 
+String _clampLayoutDisplayHint(String raw) {
+  final trimmed = raw.trim();
+  if (trimmed.isEmpty) return '';
+  if (trimmed.length <= 80) return trimmed;
+  return trimmed.substring(0, 80).trimRight();
+}
+
+class WindowLayoutPreset {
+  const WindowLayoutPreset({
+    required this.slot,
+    required this.left,
+    required this.top,
+    required this.width,
+    required this.height,
+    required this.maximized,
+    this.savedAtEpochMs = 0,
+    this.displayHint = '',
+  });
+
+  final int slot;
+  final double left;
+  final double top;
+  final double width;
+  final double height;
+  final bool maximized;
+  final int savedAtEpochMs;
+  final String displayHint;
+
+  DateTime? get savedAt => savedAtEpochMs <= 0
+      ? null
+      : DateTime.fromMillisecondsSinceEpoch(savedAtEpochMs);
+
+  WindowLayoutPreset copyWith({
+    int? slot,
+    double? left,
+    double? top,
+    double? width,
+    double? height,
+    bool? maximized,
+    int? savedAtEpochMs,
+    String? displayHint,
+  }) {
+    return WindowLayoutPreset(
+      slot: slot ?? this.slot,
+      left: left ?? this.left,
+      top: top ?? this.top,
+      width: width ?? this.width,
+      height: height ?? this.height,
+      maximized: maximized ?? this.maximized,
+      savedAtEpochMs: savedAtEpochMs ?? this.savedAtEpochMs,
+      displayHint: displayHint ?? this.displayHint,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'slot': slot,
+    'left': left,
+    'top': top,
+    'width': width,
+    'height': height,
+    'maximized': maximized,
+    'savedAtEpochMs': savedAtEpochMs,
+    'displayHint': _clampLayoutDisplayHint(displayHint),
+  };
+
+  static WindowLayoutPreset? fromJson(Object? raw) {
+    if (raw is! Map<String, dynamic>) return null;
+    final slot = (raw['slot'] as num?)?.toInt();
+    final left = (raw['left'] as num?)?.toDouble();
+    final top = (raw['top'] as num?)?.toDouble();
+    final width = (raw['width'] as num?)?.toDouble();
+    final height = (raw['height'] as num?)?.toDouble();
+    if (slot == null || left == null || top == null || width == null) {
+      return null;
+    }
+    if (height == null || width <= 0 || height <= 0) {
+      return null;
+    }
+    if (!_windowLayoutPresetSlots.contains(slot)) {
+      return null;
+    }
+    final savedAtEpochMs = (raw['savedAtEpochMs'] as num?)?.toInt() ?? 0;
+    final displayHint = _clampLayoutDisplayHint(
+      raw['displayHint'] as String? ?? '',
+    );
+    return WindowLayoutPreset(
+      slot: slot,
+      left: left,
+      top: top,
+      width: width,
+      height: height,
+      maximized: raw['maximized'] == true,
+      savedAtEpochMs: savedAtEpochMs.clamp(0, 4102444800000),
+      displayHint: displayHint,
+    );
+  }
+}
+
+List<WindowLayoutPreset> normalizeWindowLayoutPresets(
+  Iterable<WindowLayoutPreset> presets,
+) {
+  final bySlot = <int, WindowLayoutPreset>{};
+  for (final preset in presets) {
+    if (!_windowLayoutPresetSlots.contains(preset.slot)) continue;
+    if (preset.width <= 0 || preset.height <= 0) continue;
+    bySlot[preset.slot] = preset.copyWith(
+      displayHint: _clampLayoutDisplayHint(preset.displayHint),
+    );
+  }
+  final out = bySlot.values.toList(growable: false)
+    ..sort((a, b) => a.slot.compareTo(b.slot));
+  return out;
+}
+
+WindowLayoutPreset? windowLayoutPresetForSlot(
+  Iterable<WindowLayoutPreset> presets,
+  int slot,
+) {
+  for (final preset in presets) {
+    if (preset.slot == slot) return preset;
+  }
+  return null;
+}
+
+List<WindowLayoutPreset> upsertWindowLayoutPreset(
+  Iterable<WindowLayoutPreset> presets,
+  WindowLayoutPreset preset,
+) {
+  final next = <WindowLayoutPreset>[
+    for (final existing in presets)
+      if (existing.slot != preset.slot) existing,
+    preset,
+  ];
+  return normalizeWindowLayoutPresets(next);
+}
+
+List<WindowLayoutPreset> removeWindowLayoutPreset(
+  Iterable<WindowLayoutPreset> presets,
+  int slot,
+) {
+  return normalizeWindowLayoutPresets(
+    presets.where((preset) => preset.slot != slot),
+  );
+}
+
+String describeWindowLayoutPreset(WindowLayoutPreset preset) {
+  final size = '${preset.width.round()}x${preset.height.round()}';
+  final position = '@ ${preset.left.round()},${preset.top.round()}';
+  final mode = preset.maximized ? 'maximized' : 'normal';
+  final display = preset.displayHint.isEmpty ? '' : ' | ${preset.displayHint}';
+  final savedAt = preset.savedAt;
+  final when = savedAt == null
+      ? ''
+      : ' | ${savedAt.year.toString().padLeft(4, '0')}-'
+            '${savedAt.month.toString().padLeft(2, '0')}-'
+            '${savedAt.day.toString().padLeft(2, '0')} '
+            '${savedAt.hour.toString().padLeft(2, '0')}:'
+            '${savedAt.minute.toString().padLeft(2, '0')}';
+  return '$size $position | $mode$display$when';
+}
+
 int _clampRateLimitMBps(Object? raw, int fallback) {
   final parsed = (raw is num) ? raw.toInt() : int.tryParse('$raw');
   if (parsed == null) return fallback;
@@ -764,6 +926,7 @@ class _MyAppState extends State<MyApp> {
   late UpdateChannel updateChannel;
   late DuplicateHandlingMode duplicateHandlingMode;
   late bool showPreviewPanel;
+  late List<WindowLayoutPreset> windowLayoutPresets;
 
   @override
   void initState() {
@@ -787,6 +950,7 @@ class _MyAppState extends State<MyApp> {
     updateChannel = widget.initialSettings.updateChannel;
     duplicateHandlingMode = widget.initialSettings.duplicateHandlingMode;
     showPreviewPanel = widget.initialSettings.showPreviewPanel;
+    windowLayoutPresets = widget.initialSettings.windowLayoutPresets;
   }
 
   Future<void> _persistSettings() async {
@@ -808,6 +972,7 @@ class _MyAppState extends State<MyApp> {
         updateChannel: updateChannel,
         duplicateHandlingMode: duplicateHandlingMode,
         showPreviewPanel: showPreviewPanel,
+        windowLayoutPresets: windowLayoutPresets,
       ),
     );
   }
@@ -852,6 +1017,7 @@ class _MyAppState extends State<MyApp> {
         initialUpdateChannel: updateChannel,
         initialDuplicateHandlingMode: duplicateHandlingMode,
         initialShowPreviewPanel: showPreviewPanel,
+        initialWindowLayoutPresets: windowLayoutPresets,
         onToggleTheme: () {
           setState(() => dark = !dark);
           unawaited(_persistSettings());
@@ -916,6 +1082,10 @@ class _MyAppState extends State<MyApp> {
           setState(() => showPreviewPanel = value);
           unawaited(_persistSettings());
         },
+        onWindowLayoutPresetsChanged: (value) {
+          setState(() => windowLayoutPresets = value);
+          unawaited(_persistSettings());
+        },
       ),
     );
   }
@@ -941,6 +1111,7 @@ class Home extends StatefulWidget {
     required this.initialUpdateChannel,
     required this.initialDuplicateHandlingMode,
     required this.initialShowPreviewPanel,
+    required this.initialWindowLayoutPresets,
     required this.onToggleTheme,
     required this.onSelectTheme,
     required this.onSoundOnNudgeChanged,
@@ -957,6 +1128,7 @@ class Home extends StatefulWidget {
     required this.onUpdateChannelChanged,
     required this.onDuplicateHandlingModeChanged,
     required this.onShowPreviewPanelChanged,
+    required this.onWindowLayoutPresetsChanged,
   });
 
   final bool dark;
@@ -976,6 +1148,7 @@ class Home extends StatefulWidget {
   final UpdateChannel initialUpdateChannel;
   final DuplicateHandlingMode initialDuplicateHandlingMode;
   final bool initialShowPreviewPanel;
+  final List<WindowLayoutPreset> initialWindowLayoutPresets;
   final VoidCallback onToggleTheme;
   final ValueChanged<int> onSelectTheme;
   final ValueChanged<bool> onSoundOnNudgeChanged;
@@ -992,6 +1165,7 @@ class Home extends StatefulWidget {
   final ValueChanged<UpdateChannel> onUpdateChannelChanged;
   final ValueChanged<DuplicateHandlingMode> onDuplicateHandlingModeChanged;
   final ValueChanged<bool> onShowPreviewPanelChanged;
+  final ValueChanged<List<WindowLayoutPreset>> onWindowLayoutPresetsChanged;
 
   @override
   State<Home> createState() => _HomeState();
@@ -1028,6 +1202,7 @@ class _HomeState extends State<Home>
   ItemLayoutMode _layoutMode = ItemLayoutMode.grid;
   double _iconSize = 64;
   bool _showPreviewPanel = false;
+  List<WindowLayoutPreset> _windowLayoutPresets = const <WindowLayoutPreset>[];
   Set<String> _favoriteKeys = <String>{};
   Set<String> _selectedItemKeys = <String>{};
   Map<String, String> _itemNotes = <String, String>{};
@@ -1062,6 +1237,9 @@ class _HomeState extends State<Home>
     _updateChannel = widget.initialUpdateChannel;
     _duplicateHandlingMode = widget.initialDuplicateHandlingMode;
     _showPreviewPanel = widget.initialShowPreviewPanel;
+    _windowLayoutPresets = normalizeWindowLayoutPresets(
+      widget.initialWindowLayoutPresets,
+    );
     _searchController = TextEditingController();
     c.setRoomChannel(_roomChannel);
     c.setSharedRoomKey(_sharedRoomKey);
@@ -1754,6 +1932,59 @@ class _HomeState extends State<Home>
     } catch (_) {}
   }
 
+  String _windowLayoutDisplayHint(Rect bounds) {
+    final centerX = (bounds.left + (bounds.width / 2)).round();
+    final centerY = (bounds.top + (bounds.height / 2)).round();
+    return 'Center $centerX,$centerY';
+  }
+
+  Future<WindowLayoutPreset> _captureWindowLayoutPreset(int slot) async {
+    final bounds = await windowManager.getBounds();
+    final maximized = await windowManager.isMaximized();
+    return WindowLayoutPreset(
+      slot: slot,
+      left: bounds.left,
+      top: bounds.top,
+      width: max(bounds.width, _minWindowSize.width),
+      height: max(bounds.height, _minWindowSize.height),
+      maximized: maximized,
+      savedAtEpochMs: DateTime.now().millisecondsSinceEpoch,
+      displayHint: _windowLayoutDisplayHint(bounds),
+    );
+  }
+
+  Future<void> _saveWindowLayoutPreset(int slot) async {
+    final preset = await _captureWindowLayoutPreset(slot);
+    final next = upsertWindowLayoutPreset(_windowLayoutPresets, preset);
+    if (!mounted) return;
+    setState(() => _windowLayoutPresets = next);
+    widget.onWindowLayoutPresetsChanged(next);
+  }
+
+  Future<void> _applyWindowLayoutPreset(WindowLayoutPreset preset) async {
+    final width = max(preset.width, _minWindowSize.width);
+    final height = max(preset.height, _minWindowSize.height);
+    await windowManager.setBounds(
+      Rect.fromLTWH(preset.left, preset.top, width, height),
+    );
+    await windowManager.show();
+    if (await windowManager.isMinimized()) {
+      await windowManager.restore();
+    }
+    if (preset.maximized) {
+      await windowManager.maximize();
+    } else if (await windowManager.isMaximized()) {
+      await windowManager.unmaximize();
+    }
+    _scheduleWindowSave(immediate: true);
+  }
+
+  void _clearWindowLayoutPreset(int slot) {
+    final next = removeWindowLayoutPreset(_windowLayoutPresets, slot);
+    setState(() => _windowLayoutPresets = next);
+    widget.onWindowLayoutPresetsChanged(next);
+  }
+
   void _playNudgeSound() {
     unawaited(() async {
       try {
@@ -2295,6 +2526,7 @@ class _HomeState extends State<Home>
     String? updateStatus;
     String? startupStatus;
     bool applyingStartup = false;
+    String? layoutStatus;
     bool checkingUpdates = false;
     String? exportStatus;
     bool exportingDiagnostics = false;
@@ -2601,6 +2833,84 @@ class _HomeState extends State<Home>
                   if (startupStatus != null) ...[
                     const SizedBox(height: 4),
                     Text(startupStatus!),
+                  ],
+                  const SizedBox(height: 8),
+                  const Text('Window Layout Presets'),
+                  const SizedBox(height: 4),
+                  const Text(
+                    'Save up to three size/position presets and restore quickly.',
+                  ),
+                  const SizedBox(height: 6),
+                  for (final slot in _windowLayoutPresetSlots)
+                    Builder(
+                      builder: (_) {
+                        final preset = windowLayoutPresetForSlot(
+                          _windowLayoutPresets,
+                          slot,
+                        );
+                        final detail = preset == null
+                            ? 'Empty'
+                            : describeWindowLayoutPreset(preset);
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 4),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  'Preset $slot: $detail',
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                              TextButton(
+                                onPressed: () async {
+                                  await _saveWindowLayoutPreset(slot);
+                                  if (!context.mounted) return;
+                                  setDialogState(
+                                    () => layoutStatus = 'Saved preset $slot',
+                                  );
+                                },
+                                child: const Text('Save'),
+                              ),
+                              TextButton(
+                                onPressed: preset == null
+                                    ? null
+                                    : () async {
+                                        await _applyWindowLayoutPreset(preset);
+                                        if (!context.mounted) return;
+                                        setDialogState(
+                                          () => layoutStatus =
+                                              'Applied preset $slot',
+                                        );
+                                      },
+                                child: const Text('Apply'),
+                              ),
+                              IconButton(
+                                tooltip: 'Clear preset',
+                                visualDensity: VisualDensity.compact,
+                                onPressed: preset == null
+                                    ? null
+                                    : () {
+                                        _clearWindowLayoutPreset(slot);
+                                        setDialogState(
+                                          () => layoutStatus =
+                                              'Cleared preset $slot',
+                                        );
+                                      },
+                                icon: const Icon(
+                                  Icons.delete_outline,
+                                  size: 16,
+                                ),
+                              ),
+                            ],
+                          ),
+                        );
+                      },
+                    ),
+                  if (layoutStatus != null) ...[
+                    const SizedBox(height: 4),
+                    Text(layoutStatus!),
                   ],
                   SwitchListTile.adaptive(
                     dense: true,
@@ -7831,6 +8141,7 @@ class AppSettings {
     this.updateChannel = UpdateChannel.stable,
     this.duplicateHandlingMode = DuplicateHandlingMode.rename,
     this.showPreviewPanel = false,
+    this.windowLayoutPresets = const <WindowLayoutPreset>[],
   });
 
   final bool darkMode;
@@ -7849,6 +8160,7 @@ class AppSettings {
   final UpdateChannel updateChannel;
   final DuplicateHandlingMode duplicateHandlingMode;
   final bool showPreviewPanel;
+  final List<WindowLayoutPreset> windowLayoutPresets;
 
   Map<String, dynamic> toJson() => {
     'darkMode': darkMode,
@@ -7869,6 +8181,9 @@ class AppSettings {
       duplicateHandlingMode,
     ),
     'showPreviewPanel': showPreviewPanel,
+    'windowLayoutPresets': windowLayoutPresets
+        .map((preset) => preset.toJson())
+        .toList(growable: false),
   };
 
   static AppSettings fromJson(Map<String, dynamic> json) {
@@ -7897,6 +8212,11 @@ class AppSettings {
         json['duplicateHandlingMode'] as String?,
       ),
       showPreviewPanel: json['showPreviewPanel'] == true,
+      windowLayoutPresets: normalizeWindowLayoutPresets(
+        ((json['windowLayoutPresets'] as List<dynamic>?) ?? const <dynamic>[])
+            .map(WindowLayoutPreset.fromJson)
+            .whereType<WindowLayoutPreset>(),
+      ),
     );
   }
 }
