@@ -94,4 +94,15 @@ void main() {
     expect(restored.transferRateLimitMBps, 1);
     expect(restored.globalRateLimitMBps, 5000);
   });
+
+  test('AppSettings serializes preview panel preference', () {
+    const settings = AppSettings(
+      darkMode: true,
+      themeIndex: 0,
+      soundOnNudge: false,
+      showPreviewPanel: true,
+    );
+    final restored = AppSettings.fromJson(settings.toJson());
+    expect(restored.showPreviewPanel, isTrue);
+  });
 }

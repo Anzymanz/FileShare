@@ -263,4 +263,18 @@ void main() {
     expect(normalizeRoomChannel('___ROOM___'), '___room___');
     expect(normalizeRoomChannel('x' * 100).length, lessThanOrEqualTo(64));
   });
+
+  test('previewKindForName detects image/text/pdf and unsupported types', () {
+    expect(previewKindForName('photo.png'), ItemPreviewKind.image);
+    expect(previewKindForName('notes.md'), ItemPreviewKind.text);
+    expect(previewKindForName('manual.pdf'), ItemPreviewKind.pdf);
+    expect(previewKindForName('archive.zip'), ItemPreviewKind.unsupported);
+  });
+
+  test('supportsInlinePreviewForName returns expected capability', () {
+    expect(supportsInlinePreviewForName('README.txt'), isTrue);
+    expect(supportsInlinePreviewForName('diagram.jpg'), isTrue);
+    expect(supportsInlinePreviewForName('doc.pdf'), isTrue);
+    expect(supportsInlinePreviewForName('video.mp4'), isFalse);
+  });
 }

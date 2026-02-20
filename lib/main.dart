@@ -48,6 +48,7 @@ const int _maxPeerNameChars = 80;
 const int _maxPeerIdChars = 128;
 const int _maxIconBytes = 256 * 1024;
 const int _maxIconBase64Chars = 360 * 1024;
+const int _previewTextMaxBytes = 96 * 1024;
 const int _maxItemNoteChars = 300;
 const int _maxConcurrentInboundClients = 64;
 const int _maxConcurrentTransfersPerPeer = 3;
@@ -139,11 +140,114 @@ enum ItemSortMode {
 
 enum ItemLayoutMode { grid, list }
 
+enum ItemPreviewKind { image, text, pdf, unsupported }
+
 enum UpdateChannel { stable, beta, nightly }
 
 enum DiscoveryProfile { highReliability, balanced, lowTraffic }
 
 enum DuplicateHandlingMode { rename, skip, replace }
+
+const Set<String> _imageExtensions = {
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.gif',
+  '.bmp',
+  '.webp',
+  '.svg',
+  '.ico',
+  '.heic',
+  '.tif',
+  '.tiff',
+};
+
+const Set<String> _documentExtensions = {
+  '.txt',
+  '.md',
+  '.pdf',
+  '.doc',
+  '.docx',
+  '.xls',
+  '.xlsx',
+  '.ppt',
+  '.pptx',
+  '.csv',
+  '.rtf',
+  '.log',
+};
+
+const Set<String> _mediaExtensions = {
+  '.mp3',
+  '.wav',
+  '.flac',
+  '.m4a',
+  '.ogg',
+  '.aac',
+  '.mp4',
+  '.mov',
+  '.mkv',
+  '.avi',
+  '.wmv',
+  '.webm',
+};
+
+const Set<String> _archiveExtensions = {
+  '.zip',
+  '.rar',
+  '.7z',
+  '.tar',
+  '.gz',
+  '.bz2',
+  '.xz',
+};
+
+const Set<String> _textPreviewExtensions = {
+  '.txt',
+  '.md',
+  '.csv',
+  '.log',
+  '.json',
+  '.yaml',
+  '.yml',
+  '.xml',
+  '.ini',
+  '.conf',
+  '.cfg',
+  '.ps1',
+  '.bat',
+  '.cmd',
+  '.sh',
+  '.dart',
+  '.js',
+  '.ts',
+  '.py',
+  '.java',
+  '.cs',
+  '.cpp',
+  '.c',
+  '.hpp',
+  '.h',
+  '.go',
+  '.rs',
+  '.html',
+  '.css',
+  '.sql',
+};
+
+String extensionForName(String name) => p.extension(name).toLowerCase();
+
+ItemPreviewKind previewKindForName(String name) {
+  final ext = extensionForName(name);
+  if (_imageExtensions.contains(ext)) return ItemPreviewKind.image;
+  if (_textPreviewExtensions.contains(ext)) return ItemPreviewKind.text;
+  if (ext == '.pdf') return ItemPreviewKind.pdf;
+  return ItemPreviewKind.unsupported;
+}
+
+bool supportsInlinePreviewForName(String name) {
+  return previewKindForName(name) != ItemPreviewKind.unsupported;
+}
 
 String itemSourceFilterLabel(ItemSourceFilter filter) {
   switch (filter) {
@@ -334,53 +438,11 @@ List<String> buildNetworkDiagnosticsHints({
 
 bool _matchesItemTypeFilter(ShareItem item, ItemTypeFilter filter) {
   if (filter == ItemTypeFilter.all) return true;
-  final ext = p.extension(item.name).toLowerCase();
-  const imageExts = {
-    '.png',
-    '.jpg',
-    '.jpeg',
-    '.gif',
-    '.bmp',
-    '.webp',
-    '.svg',
-    '.ico',
-    '.heic',
-    '.tif',
-    '.tiff',
-  };
-  const docExts = {
-    '.txt',
-    '.md',
-    '.pdf',
-    '.doc',
-    '.docx',
-    '.xls',
-    '.xlsx',
-    '.ppt',
-    '.pptx',
-    '.csv',
-    '.rtf',
-    '.log',
-  };
-  const mediaExts = {
-    '.mp3',
-    '.wav',
-    '.flac',
-    '.m4a',
-    '.ogg',
-    '.aac',
-    '.mp4',
-    '.mov',
-    '.mkv',
-    '.avi',
-    '.wmv',
-    '.webm',
-  };
-  const archiveExts = {'.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz'};
-  final isImage = imageExts.contains(ext);
-  final isDocument = docExts.contains(ext);
-  final isMedia = mediaExts.contains(ext);
-  final isArchive = archiveExts.contains(ext);
+  final ext = extensionForName(item.name);
+  final isImage = _imageExtensions.contains(ext);
+  final isDocument = _documentExtensions.contains(ext);
+  final isMedia = _mediaExtensions.contains(ext);
+  final isArchive = _archiveExtensions.contains(ext);
   switch (filter) {
     case ItemTypeFilter.all:
       return true;
@@ -701,6 +763,7 @@ class _MyAppState extends State<MyApp> {
   late bool autoUpdateChecks;
   late UpdateChannel updateChannel;
   late DuplicateHandlingMode duplicateHandlingMode;
+  late bool showPreviewPanel;
 
   @override
   void initState() {
@@ -723,6 +786,7 @@ class _MyAppState extends State<MyApp> {
     autoUpdateChecks = widget.initialSettings.autoUpdateChecks;
     updateChannel = widget.initialSettings.updateChannel;
     duplicateHandlingMode = widget.initialSettings.duplicateHandlingMode;
+    showPreviewPanel = widget.initialSettings.showPreviewPanel;
   }
 
   Future<void> _persistSettings() async {
@@ -743,6 +807,7 @@ class _MyAppState extends State<MyApp> {
         autoUpdateChecks: autoUpdateChecks,
         updateChannel: updateChannel,
         duplicateHandlingMode: duplicateHandlingMode,
+        showPreviewPanel: showPreviewPanel,
       ),
     );
   }
@@ -786,6 +851,7 @@ class _MyAppState extends State<MyApp> {
         initialAutoUpdateChecks: autoUpdateChecks,
         initialUpdateChannel: updateChannel,
         initialDuplicateHandlingMode: duplicateHandlingMode,
+        initialShowPreviewPanel: showPreviewPanel,
         onToggleTheme: () {
           setState(() => dark = !dark);
           unawaited(_persistSettings());
@@ -846,6 +912,10 @@ class _MyAppState extends State<MyApp> {
           setState(() => duplicateHandlingMode = value);
           unawaited(_persistSettings());
         },
+        onShowPreviewPanelChanged: (value) {
+          setState(() => showPreviewPanel = value);
+          unawaited(_persistSettings());
+        },
       ),
     );
   }
@@ -870,6 +940,7 @@ class Home extends StatefulWidget {
     required this.initialAutoUpdateChecks,
     required this.initialUpdateChannel,
     required this.initialDuplicateHandlingMode,
+    required this.initialShowPreviewPanel,
     required this.onToggleTheme,
     required this.onSelectTheme,
     required this.onSoundOnNudgeChanged,
@@ -885,6 +956,7 @@ class Home extends StatefulWidget {
     required this.onAutoUpdateChecksChanged,
     required this.onUpdateChannelChanged,
     required this.onDuplicateHandlingModeChanged,
+    required this.onShowPreviewPanelChanged,
   });
 
   final bool dark;
@@ -903,6 +975,7 @@ class Home extends StatefulWidget {
   final bool initialAutoUpdateChecks;
   final UpdateChannel initialUpdateChannel;
   final DuplicateHandlingMode initialDuplicateHandlingMode;
+  final bool initialShowPreviewPanel;
   final VoidCallback onToggleTheme;
   final ValueChanged<int> onSelectTheme;
   final ValueChanged<bool> onSoundOnNudgeChanged;
@@ -918,6 +991,7 @@ class Home extends StatefulWidget {
   final ValueChanged<bool> onAutoUpdateChecksChanged;
   final ValueChanged<UpdateChannel> onUpdateChannelChanged;
   final ValueChanged<DuplicateHandlingMode> onDuplicateHandlingModeChanged;
+  final ValueChanged<bool> onShowPreviewPanelChanged;
 
   @override
   State<Home> createState() => _HomeState();
@@ -953,9 +1027,13 @@ class _HomeState extends State<Home>
   ItemSortMode _sortMode = ItemSortMode.ownerThenName;
   ItemLayoutMode _layoutMode = ItemLayoutMode.grid;
   double _iconSize = 64;
+  bool _showPreviewPanel = false;
   Set<String> _favoriteKeys = <String>{};
   Set<String> _selectedItemKeys = <String>{};
   Map<String, String> _itemNotes = <String, String>{};
+  final Map<String, String> _previewCachePaths = <String, String>{};
+  final Map<String, Future<String?>> _previewLoadsInFlight =
+      <String, Future<String?>>{};
   final Map<String, DateTime> _itemFirstSeenAt = <String, DateTime>{};
   bool _trayInitialized = false;
   bool _isHiddenToTray = false;
@@ -983,6 +1061,7 @@ class _HomeState extends State<Home>
     _autoUpdateChecks = widget.initialAutoUpdateChecks;
     _updateChannel = widget.initialUpdateChannel;
     _duplicateHandlingMode = widget.initialDuplicateHandlingMode;
+    _showPreviewPanel = widget.initialShowPreviewPanel;
     _searchController = TextEditingController();
     c.setRoomChannel(_roomChannel);
     c.setSharedRoomKey(_sharedRoomKey);
@@ -1133,6 +1212,7 @@ class _HomeState extends State<Home>
       _itemFirstSeenAt.putIfAbsent(item.key, () => seenNow);
     }
     _itemFirstSeenAt.removeWhere((key, _) => !keys.contains(key));
+    _previewCachePaths.removeWhere((key, _) => !keys.contains(key));
     if (_selectedItemKeys.isNotEmpty) {
       final trimmed = _selectedItemKeys.where(keys.contains).toSet();
       if (!_stringSetEquals(trimmed, _selectedItemKeys)) {
@@ -1261,6 +1341,61 @@ class _HomeState extends State<Home>
         context,
       ).showSnackBar(SnackBar(content: Text('Download failed: $e')));
     }
+  }
+
+  Future<String?> _resolvePreviewPath(
+    ShareItem item, {
+    bool fetchRemote = false,
+  }) async {
+    if (item.local) {
+      final path = item.path;
+      if (path == null || path.isEmpty) return null;
+      final file = File(path);
+      return await file.exists() ? file.path : null;
+    }
+
+    final cachedPath = _previewCachePaths[item.key];
+    if (cachedPath != null) {
+      final cachedFile = File(cachedPath);
+      if (await cachedFile.exists()) {
+        return cachedFile.path;
+      }
+    }
+    if (!fetchRemote) return null;
+
+    final existingLoad = _previewLoadsInFlight[item.key];
+    if (existingLoad != null) {
+      return existingLoad;
+    }
+
+    final job = () async {
+      try {
+        final appDir = await _appDataDir();
+        final previewRoot = Directory(p.join(appDir.path, 'preview_cache'));
+        await previewRoot.create(recursive: true);
+        final itemDir = Directory(
+          p.join(previewRoot.path, '${item.ownerId}_${item.itemId}'),
+        );
+        await itemDir.create(recursive: true);
+        final safeName = _safeFileName(p.basename(item.rel));
+        final target = File(p.join(itemDir.path, safeName));
+        await c.downloadRemoteToPath(item, target.path, allowOverwrite: true);
+        _previewCachePaths[item.key] = target.path;
+        return target.path;
+      } catch (e, st) {
+        _diagnostics.warn(
+          'Failed to fetch preview copy for ${item.name}',
+          error: e,
+          stack: st,
+        );
+        return null;
+      } finally {
+        _previewLoadsInFlight.remove(item.key);
+      }
+    }();
+
+    _previewLoadsInFlight[item.key] = job;
+    return job;
   }
 
   Future<void> _shareClipboardTextAsItem() async {
@@ -1858,6 +1993,7 @@ class _HomeState extends State<Home>
       allItems: allItems,
       selectedKeys: _selectedItemKeys,
     );
+    final previewItem = selection.all.length == 1 ? selection.all.first : null;
     return Scaffold(
       body: SafeArea(
         child: DropRegion(
@@ -1991,6 +2127,15 @@ class _HomeState extends State<Home>
                                     onIconSizeChanged: (value) {
                                       setState(() => _iconSize = value);
                                     },
+                                    previewPanelEnabled: _showPreviewPanel,
+                                    onTogglePreviewPanel: () {
+                                      setState(() {
+                                        _showPreviewPanel = !_showPreviewPanel;
+                                      });
+                                      widget.onShowPreviewPanelChanged(
+                                        _showPreviewPanel,
+                                      );
+                                    },
                                     onShareClipboardText:
                                         _shareClipboardTextAsItem,
                                   ),
@@ -2035,25 +2180,52 @@ class _HomeState extends State<Home>
                                               ).textTheme.titleSmall,
                                             ),
                                           )
-                                        : _ExplorerGrid(
-                                            items: visibleItems,
-                                            buildDragItem: c.buildDragItem,
-                                            favoriteKeys: _favoriteKeys,
-                                            isFavorite: _isFavorite,
-                                            onToggleFavorite: _toggleFavorite,
-                                            noteForItem: _noteForItem,
-                                            onEditNote: _editItemNote,
-                                            onRemove: (item) =>
-                                                c.removeLocal(item.itemId),
-                                            onDownload: _downloadRemoteItem,
-                                            onDownloadAllFromOwner:
-                                                _downloadAllFromOwner,
-                                            selectedKeys: _selectedItemKeys,
-                                            onToggleSelection:
-                                                _toggleItemSelection,
-                                            showGrid: _pointerHovering,
-                                            layoutMode: _layoutMode,
-                                            iconSize: _iconSize,
+                                        : Row(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.stretch,
+                                            children: [
+                                              Expanded(
+                                                child: _ExplorerGrid(
+                                                  items: visibleItems,
+                                                  buildDragItem:
+                                                      c.buildDragItem,
+                                                  favoriteKeys: _favoriteKeys,
+                                                  isFavorite: _isFavorite,
+                                                  onToggleFavorite:
+                                                      _toggleFavorite,
+                                                  noteForItem: _noteForItem,
+                                                  onEditNote: _editItemNote,
+                                                  onRemove: (item) => c
+                                                      .removeLocal(item.itemId),
+                                                  onDownload:
+                                                      _downloadRemoteItem,
+                                                  onDownloadAllFromOwner:
+                                                      _downloadAllFromOwner,
+                                                  selectedKeys:
+                                                      _selectedItemKeys,
+                                                  onToggleSelection:
+                                                      _toggleItemSelection,
+                                                  showGrid: _pointerHovering,
+                                                  layoutMode: _layoutMode,
+                                                  iconSize: _iconSize,
+                                                ),
+                                              ),
+                                              if (_showPreviewPanel) ...[
+                                                const SizedBox(width: 12),
+                                                SizedBox(
+                                                  width: 320,
+                                                  child: _ItemPreviewPanel(
+                                                    selectedCount:
+                                                        selection.all.length,
+                                                    selectedItem: previewItem,
+                                                    resolvePreviewPath:
+                                                        _resolvePreviewPath,
+                                                    onDownloadAs:
+                                                        _downloadRemoteItem,
+                                                  ),
+                                                ),
+                                              ],
+                                            ],
                                           ),
                                   ),
                                 ],
@@ -3083,6 +3255,8 @@ class _ExplorerToolbar extends StatelessWidget {
     required this.onToggleLayoutMode,
     required this.iconSize,
     required this.onIconSizeChanged,
+    required this.previewPanelEnabled,
+    required this.onTogglePreviewPanel,
     required this.onShareClipboardText,
   });
 
@@ -3098,6 +3272,8 @@ class _ExplorerToolbar extends StatelessWidget {
   final VoidCallback onToggleLayoutMode;
   final double iconSize;
   final ValueChanged<double> onIconSizeChanged;
+  final bool previewPanelEnabled;
+  final VoidCallback onTogglePreviewPanel;
   final Future<void> Function() onShareClipboardText;
 
   @override
@@ -3176,6 +3352,21 @@ class _ExplorerToolbar extends StatelessWidget {
                   label: Text(
                     layoutMode == ItemLayoutMode.grid ? 'List' : 'Grid',
                   ),
+                ),
+              ),
+              Tooltip(
+                message: previewPanelEnabled
+                    ? 'Hide preview panel'
+                    : 'Show preview panel',
+                child: OutlinedButton.icon(
+                  onPressed: onTogglePreviewPanel,
+                  icon: Icon(
+                    previewPanelEnabled
+                        ? Icons.visibility_off_rounded
+                        : Icons.preview_rounded,
+                    size: 16,
+                  ),
+                  label: Text(previewPanelEnabled ? 'Preview Off' : 'Preview'),
                 ),
               ),
               OutlinedButton.icon(
@@ -3314,6 +3505,388 @@ class _BulkActionBar extends StatelessWidget {
           ),
           TextButton(onPressed: onClear, child: const Text('Clear')),
         ],
+      ),
+    );
+  }
+}
+
+class _ItemPreviewPanel extends StatefulWidget {
+  const _ItemPreviewPanel({
+    required this.selectedCount,
+    required this.selectedItem,
+    required this.resolvePreviewPath,
+    required this.onDownloadAs,
+  });
+
+  final int selectedCount;
+  final ShareItem? selectedItem;
+  final Future<String?> Function(ShareItem item, {bool fetchRemote})
+  resolvePreviewPath;
+  final Future<void> Function(ShareItem item) onDownloadAs;
+
+  @override
+  State<_ItemPreviewPanel> createState() => _ItemPreviewPanelState();
+}
+
+class _ItemPreviewPanelState extends State<_ItemPreviewPanel> {
+  int _loadToken = 0;
+  bool _loading = false;
+  String? _resolvedPath;
+  String? _textPreview;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_refreshPreview(fetchRemote: false));
+  }
+
+  @override
+  void didUpdateWidget(covariant _ItemPreviewPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.selectedItem?.key != widget.selectedItem?.key) {
+      unawaited(_refreshPreview(fetchRemote: false));
+    }
+  }
+
+  Future<void> _refreshPreview({required bool fetchRemote}) async {
+    final item = widget.selectedItem;
+    final token = ++_loadToken;
+    if (item == null) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _resolvedPath = null;
+        _textPreview = null;
+        _error = null;
+      });
+      return;
+    }
+
+    final kind = previewKindForName(item.name);
+    if (kind == ItemPreviewKind.unsupported) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _resolvedPath = null;
+        _textPreview = null;
+        _error = null;
+      });
+      return;
+    }
+
+    if (!item.local && !fetchRemote) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _resolvedPath = null;
+        _textPreview = null;
+        _error = null;
+      });
+      return;
+    }
+
+    if (mounted) {
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+    }
+
+    final resolvedPath = await widget.resolvePreviewPath(
+      item,
+      fetchRemote: fetchRemote,
+    );
+    if (!mounted || token != _loadToken) return;
+    if (resolvedPath == null || resolvedPath.isEmpty) {
+      setState(() {
+        _loading = false;
+        _resolvedPath = null;
+        _textPreview = null;
+        _error = fetchRemote ? 'Failed to fetch preview copy from peer.' : null;
+      });
+      return;
+    }
+
+    String? textPreview;
+    String? error;
+    if (kind == ItemPreviewKind.text) {
+      try {
+        textPreview = await _readTextPreview(resolvedPath);
+      } catch (e) {
+        error = 'Text preview unavailable: $e';
+      }
+    }
+    if (!mounted || token != _loadToken) return;
+    setState(() {
+      _loading = false;
+      _resolvedPath = resolvedPath;
+      _textPreview = textPreview;
+      _error = error;
+    });
+  }
+
+  Future<String> _readTextPreview(String path) async {
+    final file = File(path);
+    if (!await file.exists()) {
+      return '(file not found)';
+    }
+    final builder = await file.openRead(0, _previewTextMaxBytes).fold(
+      BytesBuilder(copy: false),
+      (acc, chunk) {
+        acc.add(chunk);
+        return acc;
+      },
+    );
+    var text = utf8.decode(builder.takeBytes(), allowMalformed: true);
+    final total = await file.length();
+    if (total > _previewTextMaxBytes) {
+      text =
+          '$text\n\n[Preview truncated at ${_fmt(_previewTextMaxBytes)} of ${_fmt(total)}]';
+    }
+    return text;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface.withValues(alpha: 0.82),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: theme.colorScheme.outlineVariant.withValues(alpha: 0.56),
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(10, 10, 10, 10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  Icons.preview_rounded,
+                  size: 16,
+                  color: theme.colorScheme.primary,
+                ),
+                const SizedBox(width: 6),
+                Text('Preview', style: theme.textTheme.labelLarge),
+              ],
+            ),
+            const SizedBox(height: 10),
+            if (widget.selectedCount == 0)
+              Expanded(
+                child: _previewMessage(
+                  context,
+                  'Select a file to preview.',
+                  icon: Icons.touch_app_rounded,
+                ),
+              )
+            else if (widget.selectedCount > 1 || widget.selectedItem == null)
+              Expanded(
+                child: _previewMessage(
+                  context,
+                  'Select exactly one file for preview.',
+                  icon: Icons.filter_1_rounded,
+                ),
+              )
+            else
+              Expanded(
+                child: _buildSelectedPreview(context, widget.selectedItem!),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSelectedPreview(BuildContext context, ShareItem item) {
+    final theme = Theme.of(context);
+    final kind = previewKindForName(item.name);
+    final extension = extensionForName(item.name);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          p.basename(item.rel),
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: theme.textTheme.titleSmall,
+        ),
+        const SizedBox(height: 2),
+        Text(
+          '${item.owner} • ${_fmt(item.size)}',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: theme.textTheme.bodySmall,
+        ),
+        const SizedBox(height: 2),
+        Text(
+          extension.isEmpty ? 'No extension' : extension.toUpperCase(),
+          style: theme.textTheme.labelSmall,
+        ),
+        const SizedBox(height: 10),
+        Expanded(child: _buildPreviewBody(context, item, kind)),
+      ],
+    );
+  }
+
+  Widget _buildPreviewBody(
+    BuildContext context,
+    ShareItem item,
+    ItemPreviewKind kind,
+  ) {
+    if (kind == ItemPreviewKind.unsupported) {
+      return _previewMessage(
+        context,
+        'Preview is not available for this file type.',
+        icon: Icons.block_rounded,
+      );
+    }
+    if (_loading) {
+      return const Center(child: CircularProgressIndicator(strokeWidth: 2));
+    }
+    if (_error != null) {
+      return _previewMessage(
+        context,
+        _error!,
+        icon: Icons.error_outline_rounded,
+        actions: [
+          if (!item.local)
+            FilledButton.icon(
+              onPressed: () => _refreshPreview(fetchRemote: true),
+              icon: const Icon(Icons.download_for_offline_rounded, size: 16),
+              label: const Text('Retry preview copy'),
+            ),
+        ],
+      );
+    }
+    if (!item.local && _resolvedPath == null) {
+      return _previewMessage(
+        context,
+        'Remote previews are on-demand to keep sync light.\n'
+        'Load a temporary preview copy or use Download As...',
+        icon: Icons.cloud_download_rounded,
+        actions: [
+          FilledButton.icon(
+            onPressed: () => _refreshPreview(fetchRemote: true),
+            icon: const Icon(Icons.download_for_offline_rounded, size: 16),
+            label: const Text('Load Preview Copy'),
+          ),
+          OutlinedButton.icon(
+            onPressed: () => unawaited(widget.onDownloadAs(item)),
+            icon: const Icon(Icons.download_rounded, size: 16),
+            label: const Text('Download As...'),
+          ),
+        ],
+      );
+    }
+    final path = _resolvedPath;
+    if (path == null || path.isEmpty) {
+      return _previewMessage(
+        context,
+        'Preview file unavailable.',
+        icon: Icons.warning_amber_rounded,
+      );
+    }
+
+    switch (kind) {
+      case ItemPreviewKind.image:
+        return Container(
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: Theme.of(
+              context,
+            ).colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: Image.file(
+              File(path),
+              fit: BoxFit.contain,
+              errorBuilder: (_, __, ___) => _previewMessage(
+                context,
+                'Failed to render image preview.',
+                icon: Icons.broken_image_outlined,
+              ),
+            ),
+          ),
+        );
+      case ItemPreviewKind.text:
+        final text = (_textPreview ?? '').trim().isEmpty
+            ? '(empty file)'
+            : _textPreview!;
+        return Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: Theme.of(
+              context,
+            ).colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: SingleChildScrollView(
+            child: SelectableText(
+              text,
+              style: Theme.of(
+                context,
+              ).textTheme.bodySmall?.copyWith(fontFamily: 'Consolas'),
+            ),
+          ),
+        );
+      case ItemPreviewKind.pdf:
+        return _previewMessage(
+          context,
+          'PDF detected.\nInline PDF rendering is not enabled yet.\n'
+          'Use Download As... to open in your preferred viewer.',
+          icon: Icons.picture_as_pdf_rounded,
+          actions: [
+            if (!item.local)
+              OutlinedButton.icon(
+                onPressed: () => unawaited(widget.onDownloadAs(item)),
+                icon: const Icon(Icons.download_rounded, size: 16),
+                label: const Text('Download As...'),
+              ),
+          ],
+        );
+      case ItemPreviewKind.unsupported:
+        return const SizedBox.shrink();
+    }
+  }
+
+  Widget _previewMessage(
+    BuildContext context,
+    String message, {
+    required IconData icon,
+    List<Widget> actions = const <Widget>[],
+  }) {
+    final theme = Theme.of(context);
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 260),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 26, color: theme.colorScheme.primary),
+            const SizedBox(height: 10),
+            Text(
+              message,
+              textAlign: TextAlign.center,
+              style: theme.textTheme.bodySmall,
+            ),
+            if (actions.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Wrap(
+                alignment: WrapAlignment.center,
+                spacing: 8,
+                runSpacing: 8,
+                children: actions,
+              ),
+            ],
+          ],
+        ),
       ),
     );
   }
@@ -7257,6 +7830,7 @@ class AppSettings {
     this.autoUpdateChecks = false,
     this.updateChannel = UpdateChannel.stable,
     this.duplicateHandlingMode = DuplicateHandlingMode.rename,
+    this.showPreviewPanel = false,
   });
 
   final bool darkMode;
@@ -7274,6 +7848,7 @@ class AppSettings {
   final bool autoUpdateChecks;
   final UpdateChannel updateChannel;
   final DuplicateHandlingMode duplicateHandlingMode;
+  final bool showPreviewPanel;
 
   Map<String, dynamic> toJson() => {
     'darkMode': darkMode,
@@ -7293,6 +7868,7 @@ class AppSettings {
     'duplicateHandlingMode': duplicateHandlingModeToString(
       duplicateHandlingMode,
     ),
+    'showPreviewPanel': showPreviewPanel,
   };
 
   static AppSettings fromJson(Map<String, dynamic> json) {
@@ -7320,6 +7896,7 @@ class AppSettings {
       duplicateHandlingMode: duplicateHandlingModeFromString(
         json['duplicateHandlingMode'] as String?,
       ),
+      showPreviewPanel: json['showPreviewPanel'] == true,
     );
   }
 }
