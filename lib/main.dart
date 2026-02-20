@@ -27,6 +27,8 @@ const String _discoveryMulticastGroup = '239.255.77.77';
 const String _tag = 'fileshare_lan_v2';
 const String _latestReleaseApiUrl =
     'https://api.github.com/repos/Anzymanz/FileShare/releases/latest';
+const String _allReleasesApiUrl =
+    'https://api.github.com/repos/Anzymanz/FileShare/releases';
 const String _latestReleasePageUrl =
     'https://github.com/Anzymanz/FileShare/releases/latest';
 const String _windowsRunKey = r'HKCU\Software\Microsoft\Windows\CurrentVersion\Run';
@@ -130,6 +132,8 @@ enum ItemSortMode {
 
 enum ItemLayoutMode { grid, list }
 
+enum UpdateChannel { stable, beta, nightly }
+
 String itemSourceFilterLabel(ItemSourceFilter filter) {
   switch (filter) {
     case ItemSourceFilter.all:
@@ -172,6 +176,39 @@ String itemSortModeLabel(ItemSortMode mode) {
       return 'Date Added (Newest)';
     case ItemSortMode.dateAddedAsc:
       return 'Date Added (Oldest)';
+  }
+}
+
+String updateChannelLabel(UpdateChannel channel) {
+  switch (channel) {
+    case UpdateChannel.stable:
+      return 'Stable';
+    case UpdateChannel.beta:
+      return 'Beta';
+    case UpdateChannel.nightly:
+      return 'Nightly';
+  }
+}
+
+UpdateChannel updateChannelFromString(String? value) {
+  switch ((value ?? '').trim().toLowerCase()) {
+    case 'beta':
+      return UpdateChannel.beta;
+    case 'nightly':
+      return UpdateChannel.nightly;
+    default:
+      return UpdateChannel.stable;
+  }
+}
+
+String updateChannelToString(UpdateChannel channel) {
+  switch (channel) {
+    case UpdateChannel.stable:
+      return 'stable';
+    case UpdateChannel.beta:
+      return 'beta';
+    case UpdateChannel.nightly:
+      return 'nightly';
   }
 }
 
@@ -412,6 +449,7 @@ class _MyAppState extends State<MyApp> {
   late bool startInTrayOnLaunch;
   late String sharedRoomKey;
   late bool autoUpdateChecks;
+  late UpdateChannel updateChannel;
 
   @override
   void initState() {
@@ -427,6 +465,7 @@ class _MyAppState extends State<MyApp> {
     startInTrayOnLaunch = widget.initialSettings.startInTrayOnLaunch;
     sharedRoomKey = widget.initialSettings.sharedRoomKey;
     autoUpdateChecks = widget.initialSettings.autoUpdateChecks;
+    updateChannel = widget.initialSettings.updateChannel;
   }
 
   Future<void> _persistSettings() async {
@@ -440,6 +479,7 @@ class _MyAppState extends State<MyApp> {
         startInTrayOnLaunch: startInTrayOnLaunch,
         sharedRoomKey: sharedRoomKey,
         autoUpdateChecks: autoUpdateChecks,
+        updateChannel: updateChannel,
       ),
     );
   }
@@ -476,6 +516,7 @@ class _MyAppState extends State<MyApp> {
         startInTrayRequested: widget.startInTrayRequested,
         initialSharedRoomKey: sharedRoomKey,
         initialAutoUpdateChecks: autoUpdateChecks,
+        initialUpdateChannel: updateChannel,
         onToggleTheme: () {
           setState(() => dark = !dark);
           unawaited(_persistSettings());
@@ -508,6 +549,10 @@ class _MyAppState extends State<MyApp> {
           setState(() => autoUpdateChecks = value);
           unawaited(_persistSettings());
         },
+        onUpdateChannelChanged: (value) {
+          setState(() => updateChannel = value);
+          unawaited(_persistSettings());
+        },
       ),
     );
   }
@@ -525,6 +570,7 @@ class Home extends StatefulWidget {
     required this.startInTrayRequested,
     required this.initialSharedRoomKey,
     required this.initialAutoUpdateChecks,
+    required this.initialUpdateChannel,
     required this.onToggleTheme,
     required this.onSelectTheme,
     required this.onSoundOnNudgeChanged,
@@ -533,6 +579,7 @@ class Home extends StatefulWidget {
     required this.onStartInTrayOnLaunchChanged,
     required this.onSharedRoomKeyChanged,
     required this.onAutoUpdateChecksChanged,
+    required this.onUpdateChannelChanged,
   });
 
   final bool dark;
@@ -544,6 +591,7 @@ class Home extends StatefulWidget {
   final bool startInTrayRequested;
   final String initialSharedRoomKey;
   final bool initialAutoUpdateChecks;
+  final UpdateChannel initialUpdateChannel;
   final VoidCallback onToggleTheme;
   final ValueChanged<int> onSelectTheme;
   final ValueChanged<bool> onSoundOnNudgeChanged;
@@ -552,6 +600,7 @@ class Home extends StatefulWidget {
   final ValueChanged<bool> onStartInTrayOnLaunchChanged;
   final ValueChanged<String> onSharedRoomKeyChanged;
   final ValueChanged<bool> onAutoUpdateChecksChanged;
+  final ValueChanged<UpdateChannel> onUpdateChannelChanged;
 
   @override
   State<Home> createState() => _HomeState();
@@ -575,6 +624,7 @@ class _HomeState extends State<Home>
   bool _startInTrayOnLaunch = false;
   String _sharedRoomKey = '';
   bool _autoUpdateChecks = false;
+  UpdateChannel _updateChannel = UpdateChannel.stable;
   ItemSourceFilter _sourceFilter = ItemSourceFilter.all;
   ItemTypeFilter _typeFilter = ItemTypeFilter.all;
   ItemSortMode _sortMode = ItemSortMode.ownerThenName;
@@ -600,9 +650,11 @@ class _HomeState extends State<Home>
     _soundOnNudge = widget.initialSoundOnNudge;
     _sharedRoomKey = widget.initialSharedRoomKey;
     _autoUpdateChecks = widget.initialAutoUpdateChecks;
+    _updateChannel = widget.initialUpdateChannel;
     _searchController = TextEditingController();
     c.setSharedRoomKey(_sharedRoomKey);
     c.setAutoUpdateChecks(_autoUpdateChecks);
+    c.setUpdateChannel(_updateChannel);
     _nudgeAudioPlayer = AudioPlayer()..setReleaseMode(ReleaseMode.stop);
     _shakeController = AnimationController(
       vsync: this,
@@ -1520,6 +1572,29 @@ class _HomeState extends State<Home>
                       c.setAutoUpdateChecks(value);
                       widget.onAutoUpdateChecksChanged(value);
                     },
+                  ),
+                  Row(
+                    children: [
+                      const Text('Update channel:'),
+                      const SizedBox(width: 8),
+                      DropdownButton<UpdateChannel>(
+                        value: _updateChannel,
+                        items: UpdateChannel.values
+                            .map(
+                              (channel) => DropdownMenuItem<UpdateChannel>(
+                                value: channel,
+                                child: Text(updateChannelLabel(channel)),
+                              ),
+                            )
+                            .toList(growable: false),
+                        onChanged: (value) {
+                          if (value == null) return;
+                          setDialogState(() => _updateChannel = value);
+                          c.setUpdateChannel(value);
+                          widget.onUpdateChannelChanged(value);
+                        },
+                      ),
+                    ],
                   ),
                   SwitchListTile.adaptive(
                     dense: true,
@@ -3131,6 +3206,7 @@ class Controller extends ChangeNotifier {
   DateTime _lastTransferNotify = DateTime.fromMillisecondsSinceEpoch(0);
   String _sharedRoomKey = '';
   bool _autoUpdateChecks = false;
+  UpdateChannel _updateChannel = UpdateChannel.stable;
   String? latestReleaseTag;
   String? latestReleaseUrl;
   final int _simulatedLatencyMs = max(
@@ -3152,6 +3228,10 @@ class Controller extends ChangeNotifier {
 
   void setAutoUpdateChecks(bool value) {
     _autoUpdateChecks = value;
+  }
+
+  void setUpdateChannel(UpdateChannel channel) {
+    _updateChannel = channel;
   }
 
   Map<String, int> get networkDiagnostics =>
@@ -3219,7 +3299,11 @@ class Controller extends ChangeNotifier {
     try {
       final client = HttpClient();
       try {
-        final req = await client.getUrl(Uri.parse(_latestReleaseApiUrl));
+        final channel = _updateChannel;
+        final endpoint = channel == UpdateChannel.stable
+            ? _latestReleaseApiUrl
+            : _allReleasesApiUrl;
+        final req = await client.getUrl(Uri.parse(endpoint));
         req.headers.set(HttpHeaders.acceptHeader, 'application/vnd.github+json');
         req.headers.set(HttpHeaders.userAgentHeader, 'FileShare');
         final resp = await req.close().timeout(const Duration(seconds: 6));
@@ -3227,15 +3311,69 @@ class Controller extends ChangeNotifier {
           return 'Update check failed: HTTP ${resp.statusCode}';
         }
         final body = await utf8.decoder.bind(resp).join();
-        final map = _decodeJsonMap(body);
-        if (map == null) return 'Update check failed: bad response';
+        Map<String, dynamic>? map;
+        if (channel == UpdateChannel.stable) {
+          map = _decodeJsonMap(body);
+        } else {
+          Map<String, dynamic>? asMap(Object? raw) {
+            if (raw is Map<String, dynamic>) return raw;
+            if (raw is Map) {
+              final out = <String, dynamic>{};
+              for (final entry in raw.entries) {
+                if (entry.key is String) {
+                  out[entry.key as String] = entry.value;
+                }
+              }
+              return out;
+            }
+            return null;
+          }
+
+          final list = _decodeJsonList(body);
+          if (list != null) {
+            if (channel == UpdateChannel.beta) {
+              for (final entry in list) {
+                final candidate = asMap(entry);
+                if (candidate == null) continue;
+                if (candidate['prerelease'] == true) {
+                  map = candidate;
+                  break;
+                }
+              }
+            } else if (channel == UpdateChannel.nightly) {
+              for (final entry in list) {
+                final candidate = asMap(entry);
+                if (candidate == null || candidate['prerelease'] != true) {
+                  continue;
+                }
+                final tag = _safeString(candidate['tag_name'], maxChars: 64);
+                if (tag != null && tag.toLowerCase().contains('nightly')) {
+                  map = candidate;
+                  break;
+                }
+              }
+              if (map == null) {
+                for (final entry in list) {
+                  final candidate = asMap(entry);
+                  if (candidate != null && candidate['prerelease'] == true) {
+                    map = candidate;
+                    break;
+                  }
+                }
+              }
+            }
+          }
+        }
+        if (map == null) {
+          return 'No ${updateChannelLabel(channel).toLowerCase()} release found';
+        }
         final tag = _safeString(map['tag_name'], maxChars: 64);
         final url = _safeString(map['html_url'], maxChars: 512);
         latestReleaseTag = tag;
         latestReleaseUrl = url ?? _latestReleasePageUrl;
         notifyListeners();
         if (tag == null) return 'Latest release found';
-        return 'Latest release: $tag';
+        return '${updateChannelLabel(channel)} release: $tag';
       } finally {
         client.close(force: true);
       }
@@ -4988,6 +5126,15 @@ class Controller extends ChangeNotifier {
     return null;
   }
 
+  List<dynamic>? _decodeJsonList(String input) {
+    try {
+      final data = jsonDecode(input);
+      if (data is List<dynamic>) return data;
+      if (data is List) return data.toList(growable: false);
+    } catch (_) {}
+    return null;
+  }
+
   String? _safeString(Object? value, {required int maxChars}) {
     if (value is! String) return null;
     final s = value.trim();
@@ -5260,6 +5407,7 @@ class AppSettings {
     this.startInTrayOnLaunch = false,
     this.sharedRoomKey = '',
     this.autoUpdateChecks = false,
+    this.updateChannel = UpdateChannel.stable,
   });
 
   final bool darkMode;
@@ -5270,6 +5418,7 @@ class AppSettings {
   final bool startInTrayOnLaunch;
   final String sharedRoomKey;
   final bool autoUpdateChecks;
+  final UpdateChannel updateChannel;
 
   Map<String, dynamic> toJson() => {
     'darkMode': darkMode,
@@ -5280,6 +5429,7 @@ class AppSettings {
     'startInTrayOnLaunch': startInTrayOnLaunch,
     'sharedRoomKey': sharedRoomKey,
     'autoUpdateChecks': autoUpdateChecks,
+    'updateChannel': updateChannelToString(updateChannel),
   };
 
   static AppSettings fromJson(Map<String, dynamic> json) {
@@ -5292,6 +5442,7 @@ class AppSettings {
       startInTrayOnLaunch: json['startInTrayOnLaunch'] == true,
       sharedRoomKey: (json['sharedRoomKey'] as String? ?? '').trim(),
       autoUpdateChecks: json['autoUpdateChecks'] == true,
+      updateChannel: updateChannelFromString(json['updateChannel'] as String?),
     );
   }
 }
