@@ -200,6 +200,15 @@ void main() {
     expect(keys, {'peer-xyz', '192.168.0.20', '192.168.0.20:40406'});
   });
 
+  test('buildPeerFingerprint is deterministic and normalized', () {
+    final a = buildPeerFingerprint('PEER-XYZ');
+    final b = buildPeerFingerprint('peer-xyz');
+    final c = buildPeerFingerprint('other-peer');
+    expect(a, b);
+    expect(c, isNot(a));
+    expect(a, matches(RegExp(r'^[A-F0-9]{4}(-[A-F0-9]{4}){3}$')));
+  });
+
   test('summarizeSelectedItems splits local/remote and owner targets', () {
     final local = _item(
       ownerId: 'local',

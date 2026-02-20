@@ -196,4 +196,15 @@ void main() {
     final restored = AppSettings.fromJson(settings.toJson());
     expect(restored.handoffModeEnabled, isTrue);
   });
+
+  test('AppSettings serializes pairing required preference', () {
+    const settings = AppSettings(
+      darkMode: true,
+      themeIndex: 0,
+      soundOnNudge: false,
+      pairingRequired: true,
+    );
+    final restored = AppSettings.fromJson(settings.toJson());
+    expect(restored.pairingRequired, isTrue);
+  });
 }

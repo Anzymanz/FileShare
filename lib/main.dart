@@ -617,6 +617,19 @@ Set<String> buildTrustCandidateKeys({
   return out;
 }
 
+String buildPeerFingerprint(String peerId) {
+  final normalized = _normalizeTrustKey(peerId);
+  if (normalized.isEmpty) return 'UNKNOWN';
+  final digest = crypto.sha256.convert(utf8.encode(normalized)).toString();
+  final compact = digest.substring(0, 16).toUpperCase();
+  final groups = <String>[];
+  for (var i = 0; i < compact.length; i += 4) {
+    final end = min(i + 4, compact.length);
+    groups.add(compact.substring(i, end));
+  }
+  return groups.join('-');
+}
+
 bool _stringSetEquals(Set<String> a, Set<String> b) {
   if (identical(a, b)) return true;
   if (a.length != b.length) return false;
@@ -1110,6 +1123,7 @@ class _MyAppState extends State<MyApp> {
   late bool sendToIntegrationEnabled;
   late bool dragOutCompatibilityMode;
   late bool handoffModeEnabled;
+  late bool pairingRequired;
   late String roomChannel;
   late String sharedRoomKey;
   late int roomKeyExpiryMinutes;
@@ -1138,6 +1152,7 @@ class _MyAppState extends State<MyApp> {
     sendToIntegrationEnabled = widget.initialSettings.sendToIntegrationEnabled;
     dragOutCompatibilityMode = widget.initialSettings.dragOutCompatibilityMode;
     handoffModeEnabled = widget.initialSettings.handoffModeEnabled;
+    pairingRequired = widget.initialSettings.pairingRequired;
     roomChannel = widget.initialSettings.roomChannel;
     sharedRoomKey = widget.initialSettings.sharedRoomKey;
     roomKeyExpiryMinutes = widget.initialSettings.roomKeyExpiryMinutes;
@@ -1164,6 +1179,7 @@ class _MyAppState extends State<MyApp> {
         sendToIntegrationEnabled: sendToIntegrationEnabled,
         dragOutCompatibilityMode: dragOutCompatibilityMode,
         handoffModeEnabled: handoffModeEnabled,
+        pairingRequired: pairingRequired,
         roomChannel: roomChannel,
         sharedRoomKey: sharedRoomKey,
         roomKeyExpiryMinutes: roomKeyExpiryMinutes,
@@ -1212,6 +1228,7 @@ class _MyAppState extends State<MyApp> {
         initialSendToIntegrationEnabled: sendToIntegrationEnabled,
         initialDragOutCompatibilityMode: dragOutCompatibilityMode,
         initialHandoffModeEnabled: handoffModeEnabled,
+        initialPairingRequired: pairingRequired,
         startInTrayRequested: widget.startInTrayRequested,
         initialRoomChannel: roomChannel,
         initialSharedRoomKey: sharedRoomKey,
@@ -1260,6 +1277,10 @@ class _MyAppState extends State<MyApp> {
         },
         onHandoffModeChanged: (value) {
           setState(() => handoffModeEnabled = value);
+          unawaited(_persistSettings());
+        },
+        onPairingRequiredChanged: (value) {
+          setState(() => pairingRequired = value);
           unawaited(_persistSettings());
         },
         onRoomChannelChanged: (value) {
@@ -1327,6 +1348,7 @@ class Home extends StatefulWidget {
     required this.initialSendToIntegrationEnabled,
     required this.initialDragOutCompatibilityMode,
     required this.initialHandoffModeEnabled,
+    required this.initialPairingRequired,
     required this.startInTrayRequested,
     required this.initialRoomChannel,
     required this.initialSharedRoomKey,
@@ -1350,6 +1372,7 @@ class Home extends StatefulWidget {
     required this.onSendToIntegrationChanged,
     required this.onDragOutCompatibilityModeChanged,
     required this.onHandoffModeChanged,
+    required this.onPairingRequiredChanged,
     required this.onRoomChannelChanged,
     required this.onSharedRoomKeyChanged,
     required this.onRoomKeyExpiryMinutesChanged,
@@ -1373,6 +1396,7 @@ class Home extends StatefulWidget {
   final bool initialSendToIntegrationEnabled;
   final bool initialDragOutCompatibilityMode;
   final bool initialHandoffModeEnabled;
+  final bool initialPairingRequired;
   final bool startInTrayRequested;
   final String initialRoomChannel;
   final String initialSharedRoomKey;
@@ -1396,6 +1420,7 @@ class Home extends StatefulWidget {
   final ValueChanged<bool> onSendToIntegrationChanged;
   final ValueChanged<bool> onDragOutCompatibilityModeChanged;
   final ValueChanged<bool> onHandoffModeChanged;
+  final ValueChanged<bool> onPairingRequiredChanged;
   final ValueChanged<String> onRoomChannelChanged;
   final ValueChanged<String> onSharedRoomKeyChanged;
   final ValueChanged<int> onRoomKeyExpiryMinutesChanged;
@@ -1432,6 +1457,7 @@ class _HomeState extends State<Home>
   bool _sendToIntegrationEnabled = false;
   bool _dragOutCompatibilityMode = false;
   bool _handoffModeEnabled = false;
+  bool _pairingRequired = false;
   String _roomChannel = '';
   String _sharedRoomKey = '';
   int _roomKeyExpiryMinutes = _defaultRoomKeyExpiryMinutes;
@@ -1461,6 +1487,7 @@ class _HomeState extends State<Home>
   bool _isQuitting = false;
   String? _lastDownloadDirectory;
   DateTime? _roomKeyExpiresAt;
+  int _lastPairingRequestCount = 0;
   late final TextEditingController _searchController;
   Timer? _flashTimer;
   Timer? _roomKeyExpiryTimer;
@@ -1478,6 +1505,7 @@ class _HomeState extends State<Home>
     _sendToIntegrationEnabled = widget.initialSendToIntegrationEnabled;
     _dragOutCompatibilityMode = widget.initialDragOutCompatibilityMode;
     _handoffModeEnabled = widget.initialHandoffModeEnabled;
+    _pairingRequired = widget.initialPairingRequired;
     _roomChannel = widget.initialRoomChannel;
     _soundOnNudge = widget.initialSoundOnNudge;
     _sharedRoomKey = widget.initialSharedRoomKey;
@@ -1510,6 +1538,7 @@ class _HomeState extends State<Home>
     );
     c.setDragOutCompatibilityMode(_dragOutCompatibilityMode);
     c.setHandoffMode(_handoffModeEnabled);
+    c.setPairingRequired(_pairingRequired);
     c.setAutoUpdateChecks(_autoUpdateChecks);
     c.setUpdateChannel(_updateChannel);
     _nudgeAudioPlayer = AudioPlayer()..setReleaseMode(ReleaseMode.stop);
@@ -1735,6 +1764,33 @@ class _HomeState extends State<Home>
     }
     _lastRemoteKeys = remoteKeys;
     _lastRemoteCount = remoteCount;
+
+    final pairingCount = c.pendingPairingRequests.length;
+    if (pairingCount > _lastPairingRequestCount) {
+      final pending = pairingCount;
+      if (_isHiddenToTray) {
+        unawaited(
+          _showTrayNotification(
+            'FileShare',
+            pending == 1
+                ? '1 peer is waiting for pairing approval.'
+                : '$pending peers are waiting for pairing approval.',
+          ),
+        );
+      } else if (_isFocused && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            duration: const Duration(milliseconds: 1800),
+            content: Text(
+              pending == 1
+                  ? '1 peer is waiting for pairing approval.'
+                  : '$pending peers are waiting for pairing approval.',
+            ),
+          ),
+        );
+      }
+    }
+    _lastPairingRequestCount = pairingCount;
 
     if (c.nudgeTick != _lastNudge) {
       _lastNudge = c.nudgeTick;
@@ -2909,6 +2965,7 @@ class _HomeState extends State<Home>
     final localIpSummary = c.localIps.isEmpty
         ? 'Unavailable'
         : c.localIps.join(', ');
+    final localFingerprint = buildPeerFingerprint(c.deviceId);
     final probeController = TextEditingController();
     final roomController = TextEditingController(text: _roomChannel);
     final keyController = TextEditingController(text: _sharedRoomKey);
@@ -2925,6 +2982,8 @@ class _HomeState extends State<Home>
     bool applyingStartup = false;
     String? sendToStatus;
     bool applyingSendTo = false;
+    String? pairingStatus;
+    List<PairingRequest> pairingRequests = c.pendingPairingRequests;
     String? handoffStatus;
     List<HandoffRequest> handoffRequests = c.pendingHandoffRequests;
     String? layoutStatus;
@@ -2968,6 +3027,7 @@ class _HomeState extends State<Home>
                   Text('Name: ${c.deviceName}'),
                   Text('IP: $localIpSummary'),
                   Text('Port: ${c.listenPort}'),
+                  Text('Fingerprint: $localFingerprint'),
                   Text('Protocol: $_protocolMajor.$_protocolMinor'),
                   Text(
                     'Channel: ${_roomChannel.isEmpty ? '(default)' : _roomChannel}',
@@ -3105,6 +3165,129 @@ class _HomeState extends State<Home>
                   if (trustStatus != null) ...[
                     const SizedBox(height: 4),
                     Text(trustStatus!),
+                  ],
+                  SwitchListTile.adaptive(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Require peer pairing'),
+                    subtitle: const Text(
+                      'New peers must be approved before they can connect',
+                    ),
+                    value: _pairingRequired,
+                    onChanged: (value) {
+                      setDialogState(() {
+                        _pairingRequired = value;
+                        pairingRequests = c.pendingPairingRequests;
+                        pairingStatus = value
+                            ? 'Pairing approval enabled'
+                            : 'Pairing approval disabled';
+                      });
+                      c.setPairingRequired(value);
+                      widget.onPairingRequiredChanged(value);
+                    },
+                  ),
+                  if (_pairingRequired) ...[
+                    Text('This device fingerprint: $localFingerprint'),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Pending pairing approvals: ${pairingRequests.length}',
+                    ),
+                    if (pairingRequests.isEmpty)
+                      const Padding(
+                        padding: EdgeInsets.only(top: 2, bottom: 6),
+                        child: Text('No peers waiting for approval'),
+                      ),
+                    for (final request in pairingRequests.take(12))
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 4),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(
+                              child: Text(
+                                '${request.peerName} (${request.remoteAddress}'
+                                '${request.remotePort == null ? '' : ':${request.remotePort}'})\n'
+                                'ID: ${request.peerId}\n'
+                                'FP: ${request.fingerprint}',
+                                maxLines: 4,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            TextButton(
+                              onPressed: () {
+                                final approved = c.approvePairingRequest(
+                                  request.key,
+                                );
+                                final allowText = trustListToText(
+                                  c.peerAllowlist,
+                                );
+                                final blockText = trustListToText(
+                                  c.peerBlocklist,
+                                );
+                                allowlistController.text = allowText;
+                                blocklistController.text = blockText;
+                                _peerAllowlist = allowText;
+                                _peerBlocklist = blockText;
+                                widget.onPeerAllowlistChanged(allowText);
+                                widget.onPeerBlocklistChanged(blockText);
+                                setDialogState(() {
+                                  pairingRequests = c.pendingPairingRequests;
+                                  pairingStatus = approved
+                                      ? 'Paired with ${request.peerName}'
+                                      : 'Pairing request already cleared';
+                                });
+                              },
+                              child: const Text('Approve'),
+                            ),
+                            TextButton(
+                              onPressed: () {
+                                final blocked = c.blockPairingRequest(
+                                  request.key,
+                                );
+                                final allowText = trustListToText(
+                                  c.peerAllowlist,
+                                );
+                                final blockText = trustListToText(
+                                  c.peerBlocklist,
+                                );
+                                allowlistController.text = allowText;
+                                blocklistController.text = blockText;
+                                _peerAllowlist = allowText;
+                                _peerBlocklist = blockText;
+                                widget.onPeerAllowlistChanged(allowText);
+                                widget.onPeerBlocklistChanged(blockText);
+                                setDialogState(() {
+                                  pairingRequests = c.pendingPairingRequests;
+                                  pairingStatus = blocked
+                                      ? 'Blocked ${request.peerName}'
+                                      : 'Pairing request already cleared';
+                                });
+                              },
+                              child: const Text('Block'),
+                            ),
+                            TextButton(
+                              onPressed: () {
+                                final dismissed = c.dismissPairingRequest(
+                                  request.key,
+                                );
+                                setDialogState(() {
+                                  pairingRequests = c.pendingPairingRequests;
+                                  pairingStatus = dismissed
+                                      ? 'Dismissed ${request.peerName}'
+                                      : 'Pairing request already cleared';
+                                });
+                              },
+                              child: const Text('Dismiss'),
+                            ),
+                          ],
+                        ),
+                      ),
+                    if (pairingRequests.length > 12)
+                      Text('...and ${pairingRequests.length - 12} more'),
+                  ],
+                  if (pairingStatus != null) ...[
+                    const SizedBox(height: 4),
+                    Text(pairingStatus!),
                   ],
                   SwitchListTile.adaptive(
                     dense: true,
@@ -4902,6 +5085,30 @@ class HandoffRequest {
   int attempts;
 }
 
+class PairingRequest {
+  PairingRequest({
+    required this.key,
+    required this.peerId,
+    required this.peerName,
+    required this.remoteAddress,
+    required this.remotePort,
+    required this.fingerprint,
+    required this.firstSeenAt,
+    required this.lastSeenAt,
+    required this.attempts,
+  });
+
+  final String key;
+  final String peerId;
+  final String peerName;
+  final String remoteAddress;
+  final int? remotePort;
+  final String fingerprint;
+  final DateTime firstSeenAt;
+  DateTime lastSeenAt;
+  int attempts;
+}
+
 class _ExplorerGrid extends StatelessWidget {
   const _ExplorerGrid({
     required this.items,
@@ -5887,10 +6094,13 @@ class Controller extends ChangeNotifier {
   String _sharedRoomKey = '';
   final Set<String> _peerAllowlist = <String>{};
   final Set<String> _peerBlocklist = <String>{};
+  final Map<String, PairingRequest> _pendingPairingRequests =
+      <String, PairingRequest>{};
   bool _autoUpdateChecks = false;
   UpdateChannel _updateChannel = UpdateChannel.stable;
   bool _dragOutCompatibilityMode = false;
   bool _handoffModeEnabled = false;
+  bool _pairingRequired = false;
   final Map<String, HandoffRequest> _pendingHandoffRequests =
       <String, HandoffRequest>{};
   final Map<String, DateTime> _handoffApprovals = <String, DateTime>{};
@@ -5915,6 +6125,11 @@ class Controller extends ChangeNotifier {
   Set<String> get peerAllowlist => Set<String>.unmodifiable(_peerAllowlist);
   Set<String> get peerBlocklist => Set<String>.unmodifiable(_peerBlocklist);
   bool get handoffModeEnabled => _handoffModeEnabled;
+  bool get pairingRequired => _pairingRequired;
+  String get localFingerprint => buildPeerFingerprint(deviceId);
+  List<PairingRequest> get pendingPairingRequests =>
+      _pendingPairingRequests.values.toList(growable: false)
+        ..sort((a, b) => b.lastSeenAt.compareTo(a.lastSeenAt));
 
   void setRoomChannel(String value) {
     final normalized = normalizeRoomChannel(value);
@@ -5926,6 +6141,7 @@ class Controller extends ChangeNotifier {
     _peerFirstSeenAt.clear();
     _peerFirstSyncLatency.clear();
     _lastNudgeFrom.clear();
+    _pendingPairingRequests.clear();
     _broadcast();
     notifyListeners();
   }
@@ -5968,6 +6184,16 @@ class Controller extends ChangeNotifier {
     _peerBlocklist
       ..clear()
       ..addAll(nextBlock);
+    _pendingPairingRequests.removeWhere((_, request) {
+      final keys = buildTrustCandidateKeys(
+        peerId: request.peerId,
+        address: request.remoteAddress,
+        port: request.remotePort,
+      );
+      final isAllowed = keys.any(_peerAllowlist.contains);
+      final isBlocked = keys.any(_peerBlocklist.contains);
+      return isAllowed || isBlocked;
+    });
     _dropUntrustedPeers();
     _evaluateDiscoveryProfile(force: true);
     _broadcast();
@@ -5976,12 +6202,14 @@ class Controller extends ChangeNotifier {
 
   bool _isPeerTrusted({
     String? peerId,
+    String? peerName,
     required String remoteAddress,
     int? remotePort,
     bool countDiagnostics = true,
   }) {
+    final normalizedPeerId = peerId == null ? '' : _normalizeTrustKey(peerId);
     final keys = buildTrustCandidateKeys(
-      peerId: peerId,
+      peerId: normalizedPeerId,
       address: remoteAddress,
       port: remotePort,
     );
@@ -5991,14 +6219,144 @@ class Controller extends ChangeNotifier {
         return false;
       }
     }
-    if (_peerAllowlist.isEmpty) return true;
+    if (_peerAllowlist.isEmpty) {
+      if (!_pairingRequired || normalizedPeerId.isEmpty) {
+        return true;
+      }
+      _recordPairingRequest(
+        peerId: normalizedPeerId,
+        peerName: peerName ?? normalizedPeerId,
+        remoteAddress: remoteAddress,
+        remotePort: remotePort,
+      );
+      if (countDiagnostics) _incDiagnostic('pairing_required_drop');
+      return false;
+    }
     for (final key in keys) {
       if (_peerAllowlist.contains(key)) {
         return true;
       }
     }
+    if (_pairingRequired && normalizedPeerId.isNotEmpty) {
+      _recordPairingRequest(
+        peerId: normalizedPeerId,
+        peerName: peerName ?? normalizedPeerId,
+        remoteAddress: remoteAddress,
+        remotePort: remotePort,
+      );
+      if (countDiagnostics) _incDiagnostic('pairing_required_drop');
+      return false;
+    }
     if (countDiagnostics) _incDiagnostic('trust_allowlist_drop');
     return false;
+  }
+
+  void setPairingRequired(bool enabled) {
+    if (_pairingRequired == enabled) return;
+    _pairingRequired = enabled;
+    if (!enabled) {
+      _pendingPairingRequests.clear();
+    }
+    _dropUntrustedPeers();
+    _evaluateDiscoveryProfile(force: true);
+    _broadcast();
+    notifyListeners();
+  }
+
+  String _pairingRequestKey({
+    required String peerId,
+    required String remoteAddress,
+  }) {
+    final normalizedPeerId = _normalizeTrustKey(peerId);
+    if (normalizedPeerId.isNotEmpty) return normalizedPeerId;
+    return _normalizeTrustKey(remoteAddress);
+  }
+
+  void _recordPairingRequest({
+    required String peerId,
+    required String peerName,
+    required String remoteAddress,
+    required int? remotePort,
+  }) {
+    if (!_pairingRequired) return;
+    final normalizedPeerId = _normalizeTrustKey(peerId);
+    if (normalizedPeerId.isEmpty) return;
+    final now = DateTime.now();
+    final key = _pairingRequestKey(
+      peerId: normalizedPeerId,
+      remoteAddress: remoteAddress,
+    );
+    final existing = _pendingPairingRequests[key];
+    if (existing != null) {
+      existing
+        ..lastSeenAt = now
+        ..attempts = min(existing.attempts + 1, 9999);
+      return;
+    }
+    _pendingPairingRequests[key] = PairingRequest(
+      key: key,
+      peerId: normalizedPeerId,
+      peerName: peerName.trim().isEmpty ? normalizedPeerId : peerName.trim(),
+      remoteAddress: remoteAddress,
+      remotePort: remotePort,
+      fingerprint: buildPeerFingerprint(normalizedPeerId),
+      firstSeenAt: now,
+      lastSeenAt: now,
+      attempts: 1,
+    );
+    if (_pendingPairingRequests.length > 64) {
+      final oldestKey = _pendingPairingRequests.entries
+          .reduce(
+            (a, b) => a.value.firstSeenAt.isBefore(b.value.firstSeenAt) ? a : b,
+          )
+          .key;
+      _pendingPairingRequests.remove(oldestKey);
+    }
+    notifyListeners();
+  }
+
+  bool approvePairingRequest(String key) {
+    final request = _pendingPairingRequests.remove(key);
+    if (request == null) return false;
+    final allow = <String>{..._peerAllowlist};
+    final block = <String>{..._peerBlocklist};
+    for (final candidate in buildTrustCandidateKeys(
+      peerId: request.peerId,
+      address: request.remoteAddress,
+      port: request.remotePort,
+    )) {
+      allow.add(candidate);
+      block.remove(candidate);
+    }
+    setTrustLists(allowlist: allow, blocklist: block);
+    notifyListeners();
+    return true;
+  }
+
+  bool blockPairingRequest(String key) {
+    final request = _pendingPairingRequests.remove(key);
+    if (request == null) return false;
+    final allow = <String>{..._peerAllowlist};
+    final block = <String>{..._peerBlocklist};
+    for (final candidate in buildTrustCandidateKeys(
+      peerId: request.peerId,
+      address: request.remoteAddress,
+      port: request.remotePort,
+    )) {
+      block.add(candidate);
+      allow.remove(candidate);
+    }
+    setTrustLists(allowlist: allow, blocklist: block);
+    notifyListeners();
+    return true;
+  }
+
+  bool dismissPairingRequest(String key) {
+    final removed = _pendingPairingRequests.remove(key) != null;
+    if (removed) {
+      notifyListeners();
+    }
+    return removed;
   }
 
   bool _dropUntrustedPeers() {
@@ -6927,6 +7285,7 @@ class Controller extends ChangeNotifier {
         if (manifest == null) return 'Bad response';
         if (!_isPeerTrusted(
           peerId: manifest.id,
+          peerName: manifest.name,
           remoteAddress: addr.address,
           remotePort: port,
           countDiagnostics: false,
@@ -7543,9 +7902,11 @@ class Controller extends ChangeNotifier {
         final type = _safeString(map['type'], maxChars: 24);
         if (type == null) continue;
         final id = _safeString(map['id'], maxChars: _maxPeerIdChars);
+        final name = _safeString(map['name'], maxChars: _maxPeerNameChars);
         final port = _safeInt(map['port'], min: 1, max: 65535);
         if (!_isPeerTrusted(
           peerId: id,
+          peerName: name,
           remoteAddress: g.address.address,
           remotePort: port,
         )) {
@@ -7560,7 +7921,6 @@ class Controller extends ChangeNotifier {
             _sendPresenceTo(g.address);
           }
         }
-        final name = _safeString(map['name'], maxChars: _maxPeerNameChars);
         final rev = _safeInt(map['revision'], min: 0, max: 0x7fffffff) ?? 0;
         if (id == null || name == null || port == null || id == deviceId) {
           continue;
@@ -7771,6 +8131,7 @@ class Controller extends ChangeNotifier {
     }
     if (!_isPeerTrusted(
       peerId: id,
+      peerName: name,
       remoteAddress: remoteAddress.address,
       remotePort: port,
     )) {
@@ -8072,11 +8433,16 @@ class Controller extends ChangeNotifier {
       final trustPeerId =
           _safeString(req['clientId'], maxChars: _maxPeerIdChars) ??
           _safeString(req['id'], maxChars: _maxPeerIdChars);
+      final trustPeerName = _safeString(
+        req['clientName'],
+        maxChars: _maxPeerNameChars,
+      );
       final trustPort =
           _safeInt(req['clientPort'], min: 1, max: 65535) ??
           _safeInt(req['port'], min: 1, max: 65535);
       if (!_isPeerTrusted(
         peerId: trustPeerId,
+        peerName: trustPeerName,
         remoteAddress: remoteIp,
         remotePort: trustPort,
       )) {
@@ -9008,6 +9374,7 @@ class AppSettings {
     this.sendToIntegrationEnabled = false,
     this.dragOutCompatibilityMode = false,
     this.handoffModeEnabled = false,
+    this.pairingRequired = false,
     this.roomChannel = '',
     this.sharedRoomKey = '',
     this.roomKeyExpiryMinutes = _defaultRoomKeyExpiryMinutes,
@@ -9031,6 +9398,7 @@ class AppSettings {
   final bool sendToIntegrationEnabled;
   final bool dragOutCompatibilityMode;
   final bool handoffModeEnabled;
+  final bool pairingRequired;
   final String roomChannel;
   final String sharedRoomKey;
   final int roomKeyExpiryMinutes;
@@ -9054,6 +9422,7 @@ class AppSettings {
     'sendToIntegrationEnabled': sendToIntegrationEnabled,
     'dragOutCompatibilityMode': dragOutCompatibilityMode,
     'handoffModeEnabled': handoffModeEnabled,
+    'pairingRequired': pairingRequired,
     'roomChannel': roomChannel,
     'sharedRoomKey': sharedRoomKey,
     'roomKeyExpiryMinutes': roomKeyExpiryMinutes,
@@ -9083,6 +9452,7 @@ class AppSettings {
       sendToIntegrationEnabled: json['sendToIntegrationEnabled'] == true,
       dragOutCompatibilityMode: json['dragOutCompatibilityMode'] == true,
       handoffModeEnabled: json['handoffModeEnabled'] == true,
+      pairingRequired: json['pairingRequired'] == true,
       roomChannel: normalizeRoomChannel((json['roomChannel'] as String? ?? '')),
       sharedRoomKey: (json['sharedRoomKey'] as String? ?? '').trim(),
       roomKeyExpiryMinutes: _clampRoomKeyExpiryMinutes(
