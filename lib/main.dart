@@ -696,6 +696,94 @@ class _HomeState extends State<Home>
     }
   }
 
+  String _allocateBatchDownloadPath(
+    String baseDirectory,
+    ShareItem item,
+    Set<String> reserved,
+  ) {
+    final rawRel = item.rel.replaceAll('\\', '/');
+    var rel = p.normalize(rawRel);
+    if (rel.isEmpty || rel == '.' || rel.startsWith('..') || p.isAbsolute(rel)) {
+      rel = _safeFileName(p.basename(item.rel));
+    } else {
+      final parts = rel
+          .split('/')
+          .where((part) => part.isNotEmpty && part != '.')
+          .map(_safeFileName)
+          .toList(growable: false);
+      if (parts.isEmpty) {
+        rel = _safeFileName(p.basename(item.rel));
+      } else {
+        rel = p.joinAll(parts);
+      }
+    }
+
+    String candidate = p.join(baseDirectory, rel);
+    if (!p.isWithin(baseDirectory, candidate) &&
+        p.normalize(candidate) != p.normalize(baseDirectory)) {
+      candidate = p.join(baseDirectory, _safeFileName(p.basename(item.rel)));
+    }
+    String unique = candidate;
+    final ext = p.extension(unique);
+    final stem = ext.isEmpty
+        ? unique
+        : unique.substring(0, unique.length - ext.length);
+    var counter = 2;
+    while (reserved.contains(unique.toLowerCase()) || File(unique).existsSync()) {
+      unique = '$stem ($counter)$ext';
+      counter++;
+    }
+    reserved.add(unique.toLowerCase());
+    return unique;
+  }
+
+  Future<void> _downloadAllFromOwner(
+    String ownerId,
+    String ownerName,
+    List<ShareItem> sectionItems,
+  ) async {
+    final remoteItems = sectionItems
+        .where((item) => !item.local && item.peerId == ownerId)
+        .toList(growable: false);
+    if (remoteItems.isEmpty) return;
+    final targetDirectory = await fs.getDirectoryPath(
+      initialDirectory: _lastDownloadDirectory,
+      confirmButtonText: 'Download All',
+    );
+    if (targetDirectory == null || targetDirectory.trim().isEmpty) return;
+    _lastDownloadDirectory = targetDirectory;
+
+    var completed = 0;
+    var failed = 0;
+    var canceled = 0;
+    final reservedTargets = <String>{};
+    for (final item in remoteItems) {
+      final outputPath = _allocateBatchDownloadPath(
+        targetDirectory,
+        item,
+        reservedTargets,
+      );
+      try {
+        await c.downloadRemoteToPath(item, outputPath);
+        completed++;
+      } on _TransferCanceledException {
+        canceled++;
+        break;
+      } catch (_) {
+        failed++;
+      }
+    }
+    if (!mounted) return;
+    final parts = <String>[
+      '$completed downloaded',
+      if (failed > 0) '$failed failed',
+      if (canceled > 0) '$canceled canceled',
+    ];
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Download all from $ownerName: ${parts.join(', ')}')),
+    );
+  }
+
   @override
   void onWindowFocus() {
     _isFocused = true;
@@ -1118,6 +1206,8 @@ class _HomeState extends State<Home>
                                             onRemove: (item) =>
                                                 c.removeLocal(item.itemId),
                                             onDownload: _downloadRemoteItem,
+                                            onDownloadAllFromOwner:
+                                                _downloadAllFromOwner,
                                             showGrid: _pointerHovering,
                                             layoutMode: _layoutMode,
                                             iconSize: _iconSize,
@@ -1941,12 +2031,21 @@ class _ToolbarDropdown<T> extends StatelessWidget {
   }
 }
 
+class _OwnerSection {
+  _OwnerSection({required this.ownerId, required this.ownerName});
+
+  final String ownerId;
+  final String ownerName;
+  final List<ShareItem> items = <ShareItem>[];
+}
+
 class _ExplorerGrid extends StatelessWidget {
   const _ExplorerGrid({
     required this.items,
     required this.buildDragItem,
     required this.onRemove,
     required this.onDownload,
+    required this.onDownloadAllFromOwner,
     required this.showGrid,
     required this.layoutMode,
     required this.iconSize,
@@ -1956,6 +2055,8 @@ class _ExplorerGrid extends StatelessWidget {
   final Future<DragItem?> Function(ShareItem) buildDragItem;
   final ValueChanged<ShareItem> onRemove;
   final Future<void> Function(ShareItem) onDownload;
+  final Future<void> Function(String ownerId, String ownerName, List<ShareItem>)
+  onDownloadAllFromOwner;
   final bool showGrid;
   final ItemLayoutMode layoutMode;
   final double iconSize;
@@ -1967,12 +2068,16 @@ class _ExplorerGrid extends StatelessWidget {
         final normalizedIconSize = iconSize.clamp(44.0, 96.0);
         final tileWidth = max(116.0, normalizedIconSize + 56.0);
         final columns = max(1, (constraints.maxWidth / tileWidth).floor());
-        final groups = <String, List<ShareItem>>{};
+        final groups = <String, _OwnerSection>{};
         for (final item in items) {
-          groups.putIfAbsent(item.owner, () => <ShareItem>[]).add(item);
+          final section = groups.putIfAbsent(
+            item.ownerId,
+            () => _OwnerSection(ownerId: item.ownerId, ownerName: item.owner),
+          );
+          section.items.add(item);
         }
-        final orderedGroups = groups.entries.toList(growable: false)
-          ..sort((a, b) => a.key.compareTo(b.key));
+        final orderedGroups = groups.values.toList(growable: false)
+          ..sort((a, b) => a.ownerName.compareTo(b.ownerName));
         return TweenAnimationBuilder<double>(
           tween: Tween<double>(begin: 0, end: showGrid ? 0.06 : 0),
           duration: const Duration(milliseconds: 180),
@@ -1988,8 +2093,9 @@ class _ExplorerGrid extends StatelessWidget {
                 itemCount: orderedGroups.length,
                 itemBuilder: (context, groupIndex) {
                   final group = orderedGroups[groupIndex];
-                  final owner = group.key;
-                  final sectionItems = group.value;
+                  final owner = group.ownerName;
+                  final sectionItems = group.items;
+                  final hasRemoteItems = sectionItems.any((item) => !item.local);
                   return Padding(
                     padding: EdgeInsets.only(
                       bottom: groupIndex == orderedGroups.length - 1 ? 0 : 12,
@@ -1999,9 +2105,29 @@ class _ExplorerGrid extends StatelessWidget {
                       children: [
                         Padding(
                           padding: const EdgeInsets.fromLTRB(6, 2, 6, 8),
-                          child: Text(
-                            owner,
-                            style: Theme.of(context).textTheme.labelLarge,
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  owner,
+                                  style: Theme.of(context).textTheme.labelLarge,
+                                ),
+                              ),
+                              if (hasRemoteItems)
+                                TextButton.icon(
+                                  onPressed: () {
+                                    unawaited(
+                                      onDownloadAllFromOwner(
+                                        group.ownerId,
+                                        group.ownerName,
+                                        sectionItems,
+                                      ),
+                                    );
+                                  },
+                                  icon: const Icon(Icons.download, size: 14),
+                                  label: const Text('Download all...'),
+                                ),
+                            ],
                           ),
                         ),
                         if (layoutMode == ItemLayoutMode.grid)
