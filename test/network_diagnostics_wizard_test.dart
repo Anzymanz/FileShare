@@ -11,27 +11,41 @@ void main() {
       roomKeyEnabled: false,
     );
 
-    expect(
-      hints.any((h) => h.toLowerCase().contains('firewall')),
-      isTrue,
-    );
+    expect(hints.any((h) => h.toLowerCase().contains('firewall')), isTrue);
   });
 
-  test('buildNetworkDiagnosticsHints flags no-peer and auth mismatch cases', () {
-    final hints = buildNetworkDiagnosticsHints(
-      connectedPeers: 0,
-      localIps: const [],
-      diagnostics: const <String, int>{
-        'udp_auth_drop': 2,
-        'tcp_protocol_mismatch': 1,
-      },
-      hasIncompatiblePeers: true,
-      roomKeyEnabled: true,
-    );
+  test(
+    'buildNetworkDiagnosticsHints flags no-peer and auth mismatch cases',
+    () {
+      final hints = buildNetworkDiagnosticsHints(
+        connectedPeers: 0,
+        localIps: const [],
+        diagnostics: const <String, int>{
+          'udp_auth_drop': 2,
+          'tcp_protocol_mismatch': 1,
+          'room_mismatch_drop': 3,
+        },
+        hasIncompatiblePeers: true,
+        roomKeyEnabled: true,
+      );
 
-    expect(hints.any((h) => h.toLowerCase().contains('no peers connected')), isTrue);
-    expect(hints.any((h) => h.toLowerCase().contains('room key')), isTrue);
-    expect(hints.any((h) => h.toLowerCase().contains('version mismatch')), isTrue);
-    expect(hints.any((h) => h.toLowerCase().contains('protocol mismatch')), isTrue);
-  });
+      expect(
+        hints.any((h) => h.toLowerCase().contains('no peers connected')),
+        isTrue,
+      );
+      expect(hints.any((h) => h.toLowerCase().contains('room key')), isTrue);
+      expect(
+        hints.any((h) => h.toLowerCase().contains('room/channel mismatch')),
+        isTrue,
+      );
+      expect(
+        hints.any((h) => h.toLowerCase().contains('version mismatch')),
+        isTrue,
+      );
+      expect(
+        hints.any((h) => h.toLowerCase().contains('protocol mismatch')),
+        isTrue,
+      );
+    },
+  );
 }

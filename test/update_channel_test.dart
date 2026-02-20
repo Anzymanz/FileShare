@@ -53,4 +53,17 @@ void main() {
     final restored = AppSettings.fromJson(json);
     expect(restored.duplicateHandlingMode, DuplicateHandlingMode.skip);
   });
+
+  test('AppSettings serializes room channel', () {
+    const settings = AppSettings(
+      darkMode: true,
+      themeIndex: 0,
+      soundOnNudge: false,
+      roomChannel: 'Team Alpha',
+    );
+
+    final json = settings.toJson();
+    final restored = AppSettings.fromJson(json);
+    expect(restored.roomChannel, 'team-alpha');
+  });
 }

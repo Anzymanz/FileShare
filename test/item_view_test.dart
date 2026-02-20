@@ -256,4 +256,11 @@ void main() {
       isNull,
     );
   });
+
+  test('normalizeRoomChannel sanitizes room names', () {
+    expect(normalizeRoomChannel(' Team Alpha '), 'team-alpha');
+    expect(normalizeRoomChannel(''), '');
+    expect(normalizeRoomChannel('___ROOM___'), '___room___');
+    expect(normalizeRoomChannel('x' * 100).length, lessThanOrEqualTo(64));
+  });
 }

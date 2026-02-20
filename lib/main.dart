@@ -316,6 +316,11 @@ List<String> buildNetworkDiagnosticsHints({
       'Protocol mismatch traffic detected. Upgrade/downgrade peer app.',
     );
   }
+  if ((diagnostics['room_mismatch_drop'] ?? 0) > 0) {
+    hints.add(
+      'Room/channel mismatch detected. Confirm both peers use the same channel.',
+    );
+  }
   if ((diagnostics['udp_rate_limited'] ?? 0) > 0 ||
       (diagnostics['tcp_req_rate_limited'] ?? 0) > 0) {
     hints.add('Rate limiting is active. Reduce rapid probes/reconnect loops.');
@@ -560,6 +565,18 @@ String normalizeItemNote(String raw) {
   return trimmed.substring(0, _maxItemNoteChars).trimRight();
 }
 
+String normalizeRoomChannel(String raw) {
+  final trimmed = raw.trim().toLowerCase();
+  if (trimmed.isEmpty) return '';
+  final cleaned = trimmed
+      .replaceAll(RegExp(r'[^a-z0-9._-]+'), '-')
+      .replaceAll(RegExp(r'-{2,}'), '-')
+      .replaceAll(RegExp(r'^-+|-+$'), '');
+  if (cleaned.isEmpty) return '';
+  if (cleaned.length <= 64) return cleaned;
+  return cleaned.substring(0, 64);
+}
+
 String? normalizeSha256Hex(Object? raw) {
   if (raw is! String) return null;
   final value = raw.trim().toLowerCase();
@@ -669,6 +686,7 @@ class _MyAppState extends State<MyApp> {
   late bool minimizeToTray;
   late bool startWithWindows;
   late bool startInTrayOnLaunch;
+  late String roomChannel;
   late String sharedRoomKey;
   late String peerAllowlist;
   late String peerBlocklist;
@@ -688,6 +706,7 @@ class _MyAppState extends State<MyApp> {
     minimizeToTray = widget.initialSettings.minimizeToTray;
     startWithWindows = widget.initialSettings.startWithWindows;
     startInTrayOnLaunch = widget.initialSettings.startInTrayOnLaunch;
+    roomChannel = widget.initialSettings.roomChannel;
     sharedRoomKey = widget.initialSettings.sharedRoomKey;
     peerAllowlist = widget.initialSettings.peerAllowlist;
     peerBlocklist = widget.initialSettings.peerBlocklist;
@@ -705,6 +724,7 @@ class _MyAppState extends State<MyApp> {
         minimizeToTray: minimizeToTray,
         startWithWindows: startWithWindows,
         startInTrayOnLaunch: startInTrayOnLaunch,
+        roomChannel: roomChannel,
         sharedRoomKey: sharedRoomKey,
         peerAllowlist: peerAllowlist,
         peerBlocklist: peerBlocklist,
@@ -745,6 +765,7 @@ class _MyAppState extends State<MyApp> {
         initialStartWithWindows: startWithWindows,
         initialStartInTrayOnLaunch: startInTrayOnLaunch,
         startInTrayRequested: widget.startInTrayRequested,
+        initialRoomChannel: roomChannel,
         initialSharedRoomKey: sharedRoomKey,
         initialPeerAllowlist: peerAllowlist,
         initialPeerBlocklist: peerBlocklist,
@@ -773,6 +794,10 @@ class _MyAppState extends State<MyApp> {
         },
         onStartInTrayOnLaunchChanged: (value) {
           setState(() => startInTrayOnLaunch = value);
+          unawaited(_persistSettings());
+        },
+        onRoomChannelChanged: (value) {
+          setState(() => roomChannel = value);
           unawaited(_persistSettings());
         },
         onSharedRoomKeyChanged: (value) {
@@ -814,6 +839,7 @@ class Home extends StatefulWidget {
     required this.initialStartWithWindows,
     required this.initialStartInTrayOnLaunch,
     required this.startInTrayRequested,
+    required this.initialRoomChannel,
     required this.initialSharedRoomKey,
     required this.initialPeerAllowlist,
     required this.initialPeerBlocklist,
@@ -826,6 +852,7 @@ class Home extends StatefulWidget {
     required this.onMinimizeToTrayChanged,
     required this.onStartWithWindowsChanged,
     required this.onStartInTrayOnLaunchChanged,
+    required this.onRoomChannelChanged,
     required this.onSharedRoomKeyChanged,
     required this.onPeerAllowlistChanged,
     required this.onPeerBlocklistChanged,
@@ -841,6 +868,7 @@ class Home extends StatefulWidget {
   final bool initialStartWithWindows;
   final bool initialStartInTrayOnLaunch;
   final bool startInTrayRequested;
+  final String initialRoomChannel;
   final String initialSharedRoomKey;
   final String initialPeerAllowlist;
   final String initialPeerBlocklist;
@@ -853,6 +881,7 @@ class Home extends StatefulWidget {
   final ValueChanged<bool> onMinimizeToTrayChanged;
   final ValueChanged<bool> onStartWithWindowsChanged;
   final ValueChanged<bool> onStartInTrayOnLaunchChanged;
+  final ValueChanged<String> onRoomChannelChanged;
   final ValueChanged<String> onSharedRoomKeyChanged;
   final ValueChanged<String> onPeerAllowlistChanged;
   final ValueChanged<String> onPeerBlocklistChanged;
@@ -880,6 +909,7 @@ class _HomeState extends State<Home>
   bool _minimizeToTray = false;
   bool _startWithWindows = false;
   bool _startInTrayOnLaunch = false;
+  String _roomChannel = '';
   String _sharedRoomKey = '';
   String _peerAllowlist = '';
   String _peerBlocklist = '';
@@ -911,6 +941,7 @@ class _HomeState extends State<Home>
     _minimizeToTray = widget.initialMinimizeToTray;
     _startWithWindows = widget.initialStartWithWindows;
     _startInTrayOnLaunch = widget.initialStartInTrayOnLaunch;
+    _roomChannel = widget.initialRoomChannel;
     _soundOnNudge = widget.initialSoundOnNudge;
     _sharedRoomKey = widget.initialSharedRoomKey;
     _peerAllowlist = widget.initialPeerAllowlist;
@@ -919,6 +950,7 @@ class _HomeState extends State<Home>
     _updateChannel = widget.initialUpdateChannel;
     _duplicateHandlingMode = widget.initialDuplicateHandlingMode;
     _searchController = TextEditingController();
+    c.setRoomChannel(_roomChannel);
     c.setSharedRoomKey(_sharedRoomKey);
     c.setTrustLists(
       allowlist: parseTrustListInput(_peerAllowlist),
@@ -2040,6 +2072,7 @@ class _HomeState extends State<Home>
         ? 'Unavailable'
         : c.localIps.join(', ');
     final probeController = TextEditingController();
+    final roomController = TextEditingController(text: _roomChannel);
     final keyController = TextEditingController(text: _sharedRoomKey);
     final allowlistController = TextEditingController(text: _peerAllowlist);
     final blocklistController = TextEditingController(text: _peerBlocklist);
@@ -2077,7 +2110,28 @@ class _HomeState extends State<Home>
                   Text('Port: ${c.listenPort}'),
                   Text('Protocol: $_protocolMajor.$_protocolMinor'),
                   Text(
+                    'Channel: ${_roomChannel.isEmpty ? '(default)' : _roomChannel}',
+                  ),
+                  Text(
                     'Discovery Profile: ${discoveryProfileLabel(c.discoveryProfile)}',
+                  ),
+                  const SizedBox(height: 8),
+                  const Text('Room Channel (optional)'),
+                  const SizedBox(height: 6),
+                  TextField(
+                    controller: roomController,
+                    enableSuggestions: false,
+                    autocorrect: false,
+                    decoration: const InputDecoration(
+                      hintText: 'Channel name (e.g. team-a)',
+                      isDense: true,
+                    ),
+                    onChanged: (value) {
+                      final normalized = normalizeRoomChannel(value);
+                      _roomChannel = normalized;
+                      c.setRoomChannel(normalized);
+                      widget.onRoomChannelChanged(normalized);
+                    },
                   ),
                   const SizedBox(height: 8),
                   const Text('Room Key (optional)'),
@@ -2500,6 +2554,7 @@ class _HomeState extends State<Home>
         ),
       ),
     );
+    roomController.dispose();
     keyController.dispose();
     allowlistController.dispose();
     blocklistController.dispose();
@@ -4213,6 +4268,7 @@ class Controller extends ChangeNotifier {
   int _transferCounter = 0;
   int _activeInboundClients = 0;
   DateTime _lastTransferNotify = DateTime.fromMillisecondsSinceEpoch(0);
+  String _roomChannel = '';
   String _sharedRoomKey = '';
   final Set<String> _peerAllowlist = <String>{};
   final Set<String> _peerBlocklist = <String>{};
@@ -4230,12 +4286,34 @@ class Controller extends ChangeNotifier {
       (int.tryParse(Platform.environment[_simDropEnv] ?? '') ?? 0).clamp(0, 95);
   final Random _simRandom = Random();
 
+  String get roomChannel => _roomChannel;
   String get sharedRoomKey => _sharedRoomKey;
   Set<String> get peerAllowlist => Set<String>.unmodifiable(_peerAllowlist);
   Set<String> get peerBlocklist => Set<String>.unmodifiable(_peerBlocklist);
 
+  void setRoomChannel(String value) {
+    final normalized = normalizeRoomChannel(value);
+    if (normalized == _roomChannel) return;
+    _roomChannel = normalized;
+    peers.clear();
+    peerStatus.clear();
+    peerHealth.clear();
+    _peerFirstSeenAt.clear();
+    _peerFirstSyncLatency.clear();
+    _lastNudgeFrom.clear();
+    _broadcast();
+    notifyListeners();
+  }
+
   void setSharedRoomKey(String key) {
     _sharedRoomKey = key.trim();
+  }
+
+  bool _isSameRoom(Object? roomValue, {bool countDiagnostics = true}) {
+    final incoming = roomValue is String ? normalizeRoomChannel(roomValue) : '';
+    if (incoming == _roomChannel) return true;
+    if (countDiagnostics) _incDiagnostic('room_mismatch_drop');
+    return false;
   }
 
   void setTrustLists({
@@ -4755,6 +4833,7 @@ class Controller extends ChangeNotifier {
     return _withAuth(<String, dynamic>{
       'tag': _tag,
       'type': 'nudge',
+      'room': _roomChannel,
       'protocolMajor': _protocolMajor,
       'protocolMinor': _protocolMinor,
       'id': deviceId,
@@ -4886,6 +4965,7 @@ class Controller extends ChangeNotifier {
       _withAuth({
         'tag': _tag,
         'type': 'probe',
+        'room': _roomChannel,
         'protocolMajor': _protocolMajor,
         'protocolMinor': _protocolMinor,
         'id': deviceId,
@@ -5557,6 +5637,7 @@ class Controller extends ChangeNotifier {
       _withAuth({
         'tag': _tag,
         'type': 'presence',
+        'room': _roomChannel,
         'protocolMajor': _protocolMajor,
         'protocolMinor': _protocolMinor,
         'id': deviceId,
@@ -5632,6 +5713,9 @@ class Controller extends ChangeNotifier {
         if (map['tag'] != _tag) continue;
         if (!_verifyAuth(map)) {
           _incDiagnostic('udp_auth_drop');
+          continue;
+        }
+        if (!_isSameRoom(map['room'])) {
           continue;
         }
         final incomingMajor = _safeInt(
@@ -5855,6 +5939,7 @@ class Controller extends ChangeNotifier {
       jsonEncode(
         _withAuth({
           'type': 'manifest',
+          'room': _roomChannel,
           'protocolMajor': _protocolMajor,
           'protocolMinor': _protocolMinor,
           'clientId': deviceId,
@@ -6063,6 +6148,9 @@ class Controller extends ChangeNotifier {
         if (m == null || m['type'] != 'manifest') {
           return 'Bad response';
         }
+        if (!_isSameRoom(m['room'], countDiagnostics: false)) {
+          return 'Room mismatch';
+        }
         final incomingMajor = _safeInt(
           m['protocolMajor'],
           min: 0,
@@ -6128,9 +6216,24 @@ class Controller extends ChangeNotifier {
         s.write(
           jsonEncode({
             'type': 'error',
+            'room': _roomChannel,
             'message':
                 'Protocol mismatch. Local $_protocolMajor.x, peer ${incomingMajor ?? 'unknown'}.x',
           }),
+        );
+        s.write('\n');
+        await s.flush();
+        return;
+      }
+      if (!_isSameRoom(req['room'])) {
+        s.write(
+          jsonEncode(
+            _withAuth({
+              'type': 'error',
+              'room': _roomChannel,
+              'message': 'Room/channel mismatch',
+            }),
+          ),
         );
         s.write('\n');
         await s.flush();
@@ -6151,6 +6254,7 @@ class Controller extends ChangeNotifier {
           jsonEncode(
             _withAuth({
               'type': 'error',
+              'room': _roomChannel,
               'message': 'Peer blocked by trust policy',
             }),
           ),
@@ -6177,7 +6281,7 @@ class Controller extends ChangeNotifier {
         if (id != null) {
           _applyNudgeFrom(id);
         }
-        s.write(jsonEncode({'type': 'ok'}));
+        s.write(jsonEncode({'type': 'ok', 'room': _roomChannel}));
         s.write('\n');
         await s.flush();
         return;
@@ -6204,6 +6308,7 @@ class Controller extends ChangeNotifier {
           jsonEncode(
             _withAuth({
               'type': 'manifest',
+              'room': _roomChannel,
               'protocolMajor': _protocolMajor,
               'protocolMinor': _protocolMinor,
               'id': deviceId,
@@ -6232,6 +6337,7 @@ class Controller extends ChangeNotifier {
             jsonEncode(
               _withAuth({
                 'type': 'error',
+                'room': _roomChannel,
                 'message': 'Too many concurrent uploads for this peer',
               }),
             ),
@@ -6244,7 +6350,11 @@ class Controller extends ChangeNotifier {
         if (item == null) {
           s.write(
             jsonEncode(
-              _withAuth({'type': 'error', 'message': 'File not found'}),
+              _withAuth({
+                'type': 'error',
+                'room': _roomChannel,
+                'message': 'File not found',
+              }),
             ),
           );
           s.write('\n');
@@ -6255,7 +6365,11 @@ class Controller extends ChangeNotifier {
         if (!await file.exists()) {
           s.write(
             jsonEncode(
-              _withAuth({'type': 'error', 'message': 'Source file missing'}),
+              _withAuth({
+                'type': 'error',
+                'room': _roomChannel,
+                'message': 'Source file missing',
+              }),
             ),
           );
           s.write('\n');
@@ -6267,6 +6381,7 @@ class Controller extends ChangeNotifier {
           jsonEncode(
             _withAuth({
               'type': 'file',
+              'room': _roomChannel,
               'name': item.name,
               'relativePath': item.rel,
               'size': item.size,
@@ -6384,6 +6499,7 @@ class Controller extends ChangeNotifier {
         jsonEncode(
           _withAuth({
             'type': 'download',
+            'room': _roomChannel,
             'protocolMajor': _protocolMajor,
             'protocolMinor': _protocolMinor,
             'clientId': deviceId,
@@ -6398,6 +6514,7 @@ class Controller extends ChangeNotifier {
       final h = await _readHeader(s);
       final m = jsonDecode(h.line) as Map<String, dynamic>;
       if (!_verifyAuth(m)) throw Exception('Peer authentication failed');
+      if (!_isSameRoom(m['room'])) throw Exception('Room/channel mismatch');
       if (m['type'] == 'error') throw Exception('Peer rejected transfer');
       if (m['type'] != 'file') throw Exception('Bad response');
       final totalBytes = (m['size'] as num).toInt();
@@ -6631,6 +6748,7 @@ class Controller extends ChangeNotifier {
   }) {
     if (m['type'] != 'manifest') return null;
     if (!_verifyAuth(m)) return null;
+    if (!_isSameRoom(m['room'])) return null;
     final incomingMajor = _safeInt(m['protocolMajor'], min: 0, max: 0x7fffffff);
     if (incomingMajor != _protocolMajor) {
       throw _ProtocolMismatchException(incomingMajor);
@@ -6994,6 +7112,7 @@ class AppSettings {
     this.minimizeToTray = false,
     this.startWithWindows = false,
     this.startInTrayOnLaunch = false,
+    this.roomChannel = '',
     this.sharedRoomKey = '',
     this.peerAllowlist = '',
     this.peerBlocklist = '',
@@ -7008,6 +7127,7 @@ class AppSettings {
   final bool minimizeToTray;
   final bool startWithWindows;
   final bool startInTrayOnLaunch;
+  final String roomChannel;
   final String sharedRoomKey;
   final String peerAllowlist;
   final String peerBlocklist;
@@ -7022,6 +7142,7 @@ class AppSettings {
     'minimizeToTray': minimizeToTray,
     'startWithWindows': startWithWindows,
     'startInTrayOnLaunch': startInTrayOnLaunch,
+    'roomChannel': roomChannel,
     'sharedRoomKey': sharedRoomKey,
     'peerAllowlist': peerAllowlist,
     'peerBlocklist': peerBlocklist,
@@ -7040,6 +7161,7 @@ class AppSettings {
       minimizeToTray: json['minimizeToTray'] == true,
       startWithWindows: json['startWithWindows'] == true,
       startInTrayOnLaunch: json['startInTrayOnLaunch'] == true,
+      roomChannel: normalizeRoomChannel((json['roomChannel'] as String? ?? '')),
       sharedRoomKey: (json['sharedRoomKey'] as String? ?? '').trim(),
       peerAllowlist: (json['peerAllowlist'] as String? ?? ''),
       peerBlocklist: (json['peerBlocklist'] as String? ?? ''),
