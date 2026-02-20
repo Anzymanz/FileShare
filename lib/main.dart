@@ -143,6 +143,8 @@ enum UpdateChannel { stable, beta, nightly }
 
 enum DiscoveryProfile { highReliability, balanced, lowTraffic }
 
+enum DuplicateHandlingMode { rename, skip, replace }
+
 String itemSourceFilterLabel(ItemSourceFilter filter) {
   switch (filter) {
     case ItemSourceFilter.all:
@@ -210,6 +212,17 @@ String discoveryProfileLabel(DiscoveryProfile profile) {
   }
 }
 
+String duplicateHandlingModeLabel(DuplicateHandlingMode mode) {
+  switch (mode) {
+    case DuplicateHandlingMode.rename:
+      return 'Rename';
+    case DuplicateHandlingMode.skip:
+      return 'Skip';
+    case DuplicateHandlingMode.replace:
+      return 'Replace';
+  }
+}
+
 DiscoveryProfile selectDiscoveryProfile({
   required int connectedPeers,
   required int repeatedFetchFailures,
@@ -243,6 +256,28 @@ String updateChannelToString(UpdateChannel channel) {
       return 'beta';
     case UpdateChannel.nightly:
       return 'nightly';
+  }
+}
+
+DuplicateHandlingMode duplicateHandlingModeFromString(String? value) {
+  switch ((value ?? '').trim().toLowerCase()) {
+    case 'skip':
+      return DuplicateHandlingMode.skip;
+    case 'replace':
+      return DuplicateHandlingMode.replace;
+    default:
+      return DuplicateHandlingMode.rename;
+  }
+}
+
+String duplicateHandlingModeToString(DuplicateHandlingMode mode) {
+  switch (mode) {
+    case DuplicateHandlingMode.rename:
+      return 'rename';
+    case DuplicateHandlingMode.skip:
+      return 'skip';
+    case DuplicateHandlingMode.replace:
+      return 'replace';
   }
 }
 
@@ -639,6 +674,7 @@ class _MyAppState extends State<MyApp> {
   late String peerBlocklist;
   late bool autoUpdateChecks;
   late UpdateChannel updateChannel;
+  late DuplicateHandlingMode duplicateHandlingMode;
 
   @override
   void initState() {
@@ -657,6 +693,7 @@ class _MyAppState extends State<MyApp> {
     peerBlocklist = widget.initialSettings.peerBlocklist;
     autoUpdateChecks = widget.initialSettings.autoUpdateChecks;
     updateChannel = widget.initialSettings.updateChannel;
+    duplicateHandlingMode = widget.initialSettings.duplicateHandlingMode;
   }
 
   Future<void> _persistSettings() async {
@@ -673,6 +710,7 @@ class _MyAppState extends State<MyApp> {
         peerBlocklist: peerBlocklist,
         autoUpdateChecks: autoUpdateChecks,
         updateChannel: updateChannel,
+        duplicateHandlingMode: duplicateHandlingMode,
       ),
     );
   }
@@ -712,6 +750,7 @@ class _MyAppState extends State<MyApp> {
         initialPeerBlocklist: peerBlocklist,
         initialAutoUpdateChecks: autoUpdateChecks,
         initialUpdateChannel: updateChannel,
+        initialDuplicateHandlingMode: duplicateHandlingMode,
         onToggleTheme: () {
           setState(() => dark = !dark);
           unawaited(_persistSettings());
@@ -756,6 +795,10 @@ class _MyAppState extends State<MyApp> {
           setState(() => updateChannel = value);
           unawaited(_persistSettings());
         },
+        onDuplicateHandlingModeChanged: (value) {
+          setState(() => duplicateHandlingMode = value);
+          unawaited(_persistSettings());
+        },
       ),
     );
   }
@@ -776,6 +819,7 @@ class Home extends StatefulWidget {
     required this.initialPeerBlocklist,
     required this.initialAutoUpdateChecks,
     required this.initialUpdateChannel,
+    required this.initialDuplicateHandlingMode,
     required this.onToggleTheme,
     required this.onSelectTheme,
     required this.onSoundOnNudgeChanged,
@@ -787,6 +831,7 @@ class Home extends StatefulWidget {
     required this.onPeerBlocklistChanged,
     required this.onAutoUpdateChecksChanged,
     required this.onUpdateChannelChanged,
+    required this.onDuplicateHandlingModeChanged,
   });
 
   final bool dark;
@@ -801,6 +846,7 @@ class Home extends StatefulWidget {
   final String initialPeerBlocklist;
   final bool initialAutoUpdateChecks;
   final UpdateChannel initialUpdateChannel;
+  final DuplicateHandlingMode initialDuplicateHandlingMode;
   final VoidCallback onToggleTheme;
   final ValueChanged<int> onSelectTheme;
   final ValueChanged<bool> onSoundOnNudgeChanged;
@@ -812,6 +858,7 @@ class Home extends StatefulWidget {
   final ValueChanged<String> onPeerBlocklistChanged;
   final ValueChanged<bool> onAutoUpdateChecksChanged;
   final ValueChanged<UpdateChannel> onUpdateChannelChanged;
+  final ValueChanged<DuplicateHandlingMode> onDuplicateHandlingModeChanged;
 
   @override
   State<Home> createState() => _HomeState();
@@ -838,6 +885,7 @@ class _HomeState extends State<Home>
   String _peerBlocklist = '';
   bool _autoUpdateChecks = false;
   UpdateChannel _updateChannel = UpdateChannel.stable;
+  DuplicateHandlingMode _duplicateHandlingMode = DuplicateHandlingMode.rename;
   ItemSourceFilter _sourceFilter = ItemSourceFilter.all;
   ItemTypeFilter _typeFilter = ItemTypeFilter.all;
   ItemSortMode _sortMode = ItemSortMode.ownerThenName;
@@ -869,6 +917,7 @@ class _HomeState extends State<Home>
     _peerBlocklist = widget.initialPeerBlocklist;
     _autoUpdateChecks = widget.initialAutoUpdateChecks;
     _updateChannel = widget.initialUpdateChannel;
+    _duplicateHandlingMode = widget.initialDuplicateHandlingMode;
     _searchController = TextEditingController();
     c.setSharedRoomKey(_sharedRoomKey);
     c.setTrustLists(
@@ -1114,7 +1163,18 @@ class _HomeState extends State<Home>
     if (location == null) return;
     _lastDownloadDirectory = p.dirname(location.path);
     try {
-      await c.downloadRemoteToPath(item, location.path);
+      final downloaded = await c.downloadRemoteToPath(
+        item,
+        location.path,
+        duplicateHandlingMode: _duplicateHandlingMode,
+      );
+      if (!downloaded) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Skipped existing file')));
+        return;
+      }
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
@@ -1158,11 +1218,7 @@ class _HomeState extends State<Home>
     }
   }
 
-  String _allocateBatchDownloadPath(
-    String baseDirectory,
-    ShareItem item,
-    Set<String> reserved,
-  ) {
+  String _buildBatchDownloadPath(String baseDirectory, ShareItem item) {
     final rawRel = item.rel.replaceAll('\\', '/');
     var rel = p.normalize(rawRel);
     if (rel.isEmpty ||
@@ -1188,19 +1244,7 @@ class _HomeState extends State<Home>
         p.normalize(candidate) != p.normalize(baseDirectory)) {
       candidate = p.join(baseDirectory, _safeFileName(p.basename(item.rel)));
     }
-    String unique = candidate;
-    final ext = p.extension(unique);
-    final stem = ext.isEmpty
-        ? unique
-        : unique.substring(0, unique.length - ext.length);
-    var counter = 2;
-    while (reserved.contains(unique.toLowerCase()) ||
-        File(unique).existsSync()) {
-      unique = '$stem ($counter)$ext';
-      counter++;
-    }
-    reserved.add(unique.toLowerCase());
-    return unique;
+    return candidate;
   }
 
   Future<void> _downloadAllFromOwner(
@@ -1222,16 +1266,20 @@ class _HomeState extends State<Home>
     var completed = 0;
     var failed = 0;
     var canceled = 0;
-    final reservedTargets = <String>{};
+    var skipped = 0;
     for (final item in remoteItems) {
-      final outputPath = _allocateBatchDownloadPath(
-        targetDirectory,
-        item,
-        reservedTargets,
-      );
+      final outputPath = _buildBatchDownloadPath(targetDirectory, item);
       try {
-        await c.downloadRemoteToPath(item, outputPath);
-        completed++;
+        final downloaded = await c.downloadRemoteToPath(
+          item,
+          outputPath,
+          duplicateHandlingMode: _duplicateHandlingMode,
+        );
+        if (downloaded) {
+          completed++;
+        } else {
+          skipped++;
+        }
       } on _TransferCanceledException {
         canceled++;
         break;
@@ -1242,6 +1290,7 @@ class _HomeState extends State<Home>
     if (!mounted) return;
     final parts = <String>[
       '$completed downloaded',
+      if (skipped > 0) '$skipped skipped',
       if (failed > 0) '$failed failed',
       if (canceled > 0) '$canceled canceled',
     ];
@@ -1270,16 +1319,20 @@ class _HomeState extends State<Home>
     var completed = 0;
     var failed = 0;
     var canceled = 0;
-    final reservedTargets = <String>{};
+    var skipped = 0;
     for (final item in sorted) {
-      final outputPath = _allocateBatchDownloadPath(
-        targetDirectory,
-        item,
-        reservedTargets,
-      );
+      final outputPath = _buildBatchDownloadPath(targetDirectory, item);
       try {
-        await c.downloadRemoteToPath(item, outputPath);
-        completed++;
+        final downloaded = await c.downloadRemoteToPath(
+          item,
+          outputPath,
+          duplicateHandlingMode: _duplicateHandlingMode,
+        );
+        if (downloaded) {
+          completed++;
+        } else {
+          skipped++;
+        }
       } on _TransferCanceledException {
         canceled++;
         break;
@@ -1290,6 +1343,7 @@ class _HomeState extends State<Home>
     if (!mounted) return;
     final parts = <String>[
       '$completed downloaded',
+      if (skipped > 0) '$skipped skipped',
       if (failed > 0) '$failed failed',
       if (canceled > 0) '$canceled canceled',
     ];
@@ -2138,6 +2192,28 @@ class _HomeState extends State<Home>
                           setDialogState(() => _updateChannel = value);
                           c.setUpdateChannel(value);
                           widget.onUpdateChannelChanged(value);
+                        },
+                      ),
+                    ],
+                  ),
+                  Row(
+                    children: [
+                      const Text('Duplicate files:'),
+                      const SizedBox(width: 8),
+                      DropdownButton<DuplicateHandlingMode>(
+                        value: _duplicateHandlingMode,
+                        items: DuplicateHandlingMode.values
+                            .map(
+                              (mode) => DropdownMenuItem<DuplicateHandlingMode>(
+                                value: mode,
+                                child: Text(duplicateHandlingModeLabel(mode)),
+                              ),
+                            )
+                            .toList(growable: false),
+                        onChanged: (value) {
+                          if (value == null) return;
+                          setDialogState(() => _duplicateHandlingMode = value);
+                          widget.onDuplicateHandlingModeChanged(value);
                         },
                       ),
                     ],
@@ -5116,10 +5192,28 @@ class Controller extends ChangeNotifier {
     }
   }
 
-  Future<void> downloadRemoteToPath(
+  Future<File> _allocateRenamedTarget(File target) async {
+    final dir = target.parent.path;
+    final base = p.basename(target.path);
+    final ext = p.extension(base);
+    final stem = ext.isEmpty
+        ? base
+        : base.substring(0, base.length - ext.length);
+    var counter = 2;
+    while (true) {
+      final candidate = File(p.join(dir, '$stem ($counter)$ext'));
+      if (!await candidate.exists()) {
+        return candidate;
+      }
+      counter++;
+    }
+  }
+
+  Future<bool> downloadRemoteToPath(
     ShareItem item,
     String outputPath, {
     bool allowOverwrite = false,
+    DuplicateHandlingMode duplicateHandlingMode = DuplicateHandlingMode.rename,
   }) async {
     if (item.local) {
       throw Exception('Item is already local');
@@ -5128,10 +5222,21 @@ class Controller extends ChangeNotifier {
     if (normalizedPath.isEmpty || !p.isAbsolute(normalizedPath)) {
       throw Exception('Invalid output path');
     }
-    final target = File(normalizedPath);
+    var target = File(normalizedPath);
     await target.parent.create(recursive: true);
-    if (!allowOverwrite && await target.exists()) {
-      throw Exception('Target file already exists');
+    final effectiveDuplicateMode = allowOverwrite
+        ? DuplicateHandlingMode.replace
+        : duplicateHandlingMode;
+    if (await target.exists()) {
+      switch (effectiveDuplicateMode) {
+        case DuplicateHandlingMode.rename:
+          target = await _allocateRenamedTarget(target);
+          break;
+        case DuplicateHandlingMode.skip:
+          return false;
+        case DuplicateHandlingMode.replace:
+          break;
+      }
     }
     final temp = File('${target.path}.fileshare.part');
     if (await temp.exists()) {
@@ -5165,6 +5270,7 @@ class Controller extends ChangeNotifier {
           _notifyTransferListeners(force: true);
         }
       }
+      return true;
     } catch (e) {
       try {
         await sink.close();
@@ -6893,6 +6999,7 @@ class AppSettings {
     this.peerBlocklist = '',
     this.autoUpdateChecks = false,
     this.updateChannel = UpdateChannel.stable,
+    this.duplicateHandlingMode = DuplicateHandlingMode.rename,
   });
 
   final bool darkMode;
@@ -6906,6 +7013,7 @@ class AppSettings {
   final String peerBlocklist;
   final bool autoUpdateChecks;
   final UpdateChannel updateChannel;
+  final DuplicateHandlingMode duplicateHandlingMode;
 
   Map<String, dynamic> toJson() => {
     'darkMode': darkMode,
@@ -6919,6 +7027,9 @@ class AppSettings {
     'peerBlocklist': peerBlocklist,
     'autoUpdateChecks': autoUpdateChecks,
     'updateChannel': updateChannelToString(updateChannel),
+    'duplicateHandlingMode': duplicateHandlingModeToString(
+      duplicateHandlingMode,
+    ),
   };
 
   static AppSettings fromJson(Map<String, dynamic> json) {
@@ -6934,6 +7045,9 @@ class AppSettings {
       peerBlocklist: (json['peerBlocklist'] as String? ?? ''),
       autoUpdateChecks: json['autoUpdateChecks'] == true,
       updateChannel: updateChannelFromString(json['updateChannel'] as String?),
+      duplicateHandlingMode: duplicateHandlingModeFromString(
+        json['duplicateHandlingMode'] as String?,
+      ),
     );
   }
 }
