@@ -1556,11 +1556,18 @@ class _HomeState extends State<Home>
                   Text('Peers Online: ${c.connectedPeerCount}'),
                   if (peers.isEmpty) const Text('No peers connected'),
                   for (final p in peers)
-                    Text(
-                      '- ${p.name} | ${p.addr.address}:${p.port}'
-                      ' | ${_peerAvailabilityLabel(c.peerAvailability(p))}'
-                      ' | ${_peerStateLabel(c.peerState(p))}'
-                      '${c.peerStatus[p.id] == null ? '' : ' | ${c.peerStatus[p.id]}'}',
+                    Builder(
+                      builder: (context) {
+                        final health = c.peerHealthSummary(p);
+                        return Text(
+                          '- ${p.name} | ${p.addr.address}:${p.port}'
+                          ' | ${_peerAvailabilityLabel(c.peerAvailability(p))}'
+                          ' | ${_peerStateLabel(c.peerState(p))}'
+                          ' | Health ${health.score}% (${health.tier})'
+                          '${c.peerStatus[p.id] == null ? '' : ' | ${c.peerStatus[p.id]}'}\n'
+                          '  Hint: ${health.hint}',
+                        );
+                      },
                     ),
                   if (incompatible.isNotEmpty) ...[
                     const SizedBox(height: 8),
@@ -3000,6 +3007,17 @@ class Controller extends ChangeNotifier {
     if (age <= const Duration(seconds: 5)) return PeerAvailability.active;
     if (age <= const Duration(seconds: 20)) return PeerAvailability.away;
     return PeerAvailability.idle;
+  }
+
+  PeerHealthSummary peerHealthSummary(Peer peer) {
+    final now = DateTime.now();
+    final state = peerState(peer);
+    return evaluatePeerHealth(
+      contactAge: now.difference(peer.lastGoodContact),
+      hasManifest: peer.hasManifest,
+      fetchFailureStreak: peer.fetchFailureStreak,
+      state: state,
+    );
   }
 
   void _incDiagnostic(String key) {
@@ -5442,6 +5460,80 @@ class _TransferCanceledException implements Exception {
 enum PeerState { discovered, syncing, reachable, stale }
 
 enum PeerAvailability { active, away, idle }
+
+class PeerHealthSummary {
+  const PeerHealthSummary({
+    required this.score,
+    required this.tier,
+    required this.hint,
+  });
+
+  final int score;
+  final String tier;
+  final String hint;
+}
+
+PeerHealthSummary evaluatePeerHealth({
+  required Duration contactAge,
+  required bool hasManifest,
+  required int fetchFailureStreak,
+  required PeerState state,
+}) {
+  var score = 100;
+  String hint = 'Healthy';
+
+  if (state == PeerState.stale) {
+    score -= 55;
+    hint =
+        'Peer looks stale. Confirm both apps are open and firewall allows ports 40405/40406.';
+  } else if (state == PeerState.discovered) {
+    score -= 18;
+    hint = 'Peer discovered but not fully synced yet.';
+  } else if (state == PeerState.syncing) {
+    score -= 10;
+    hint = 'Peer is syncing.';
+  }
+
+  if (!hasManifest) {
+    score -= 12;
+    if (hint == 'Healthy') {
+      hint = 'Manifest not synced yet.';
+    }
+  }
+
+  if (fetchFailureStreak > 0) {
+    score -= min(35, fetchFailureStreak * 8);
+    if (fetchFailureStreak >= 3) {
+      hint = 'Repeated fetch failures. Try Send Probe or Connect TCP.';
+    }
+  }
+
+  if (contactAge > const Duration(seconds: 25)) {
+    score -= 22;
+    if (hint == 'Healthy') hint = 'Peer is idle.';
+  } else if (contactAge > const Duration(seconds: 8)) {
+    score -= 10;
+    if (hint == 'Healthy') hint = 'Peer may be away.';
+  }
+
+  final clamped = score.clamp(0, 100).toInt();
+  String tier;
+  if (clamped >= 85) {
+    tier = 'Excellent';
+  } else if (clamped >= 65) {
+    tier = 'Good';
+  } else if (clamped >= 40) {
+    tier = 'Fair';
+  } else {
+    tier = 'Poor';
+  }
+
+  return PeerHealthSummary(
+    score: clamped,
+    tier: tier,
+    hint: hint,
+  );
+}
 
 enum TransferDirection { download, upload }
 
