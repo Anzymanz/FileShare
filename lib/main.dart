@@ -389,6 +389,46 @@ List<ShareItem> computeVisibleItems({
   return filtered;
 }
 
+List<String> buildSubnetSweepTargets(
+  List<String> localIps, {
+  int hostStart = 1,
+  int hostEnd = 254,
+}) {
+  final start = hostStart.clamp(1, 254);
+  final end = hostEnd.clamp(1, 254);
+  if (start > end) return const <String>[];
+
+  final localSet = localIps.map((e) => e.trim()).toSet();
+  final prefixes = <String>{};
+  for (final ip in localSet) {
+    final parts = ip.split('.');
+    if (parts.length != 4) continue;
+    final octets = <int>[];
+    var valid = true;
+    for (final part in parts) {
+      final parsed = int.tryParse(part);
+      if (parsed == null || parsed < 0 || parsed > 255) {
+        valid = false;
+        break;
+      }
+      octets.add(parsed);
+    }
+    if (!valid) continue;
+    prefixes.add('${octets[0]}.${octets[1]}.${octets[2]}');
+  }
+
+  final sortedPrefixes = prefixes.toList()..sort();
+  final out = <String>[];
+  for (final prefix in sortedPrefixes) {
+    for (var host = start; host <= end; host++) {
+      final candidate = '$prefix.$host';
+      if (localSet.contains(candidate)) continue;
+      out.add(candidate);
+    }
+  }
+  return out;
+}
+
 bool _isValidStartupExecutable(String executablePath) {
   final fileName = p.basename(executablePath).toLowerCase();
   return fileName == 'fileshare.exe';
@@ -1547,6 +1587,8 @@ class _HomeState extends State<Home>
     String? probeStatus;
     bool sendingProbe = false;
     String? connectStatus;
+    String? sweepStatus;
+    bool sweepingSubnet = false;
     String? updateStatus;
     String? startupStatus;
     bool applyingStartup = false;
@@ -1832,11 +1874,34 @@ class _HomeState extends State<Home>
                         },
                         child: const Text('Connect TCP'),
                       ),
+                      TextButton(
+                        onPressed: sweepingSubnet
+                            ? null
+                            : () async {
+                                setDialogState(() {
+                                  sweepingSubnet = true;
+                                  sweepStatus = 'Sweeping local /24 subnet...';
+                                });
+                                final result = await c.sweepLocalSubnets();
+                                if (!context.mounted) return;
+                                setDialogState(() {
+                                  sweepingSubnet = false;
+                                  sweepStatus = result;
+                                });
+                              },
+                        child: Text(
+                          sweepingSubnet ? 'Sweeping...' : 'Sweep /24',
+                        ),
+                      ),
                     ],
                   ),
                   if (connectStatus != null) ...[
                     const SizedBox(height: 4),
                     Text(connectStatus!),
+                  ],
+                  if (sweepStatus != null) ...[
+                    const SizedBox(height: 4),
+                    Text(sweepStatus!),
                   ],
                   const SizedBox(height: 8),
                   Row(
@@ -3757,6 +3822,123 @@ class Controller extends ChangeNotifier {
     return true;
   }
 
+  void _applyManifestToPeer({
+    required InternetAddress addr,
+    required int port,
+    required ({String id, String name, int revision, List<RemoteItem> items})
+    manifest,
+    bool notify = true,
+  }) {
+    final id = manifest.id;
+    final name = manifest.name;
+    final rev = manifest.revision;
+    final list = manifest.items;
+    final now = DateTime.now();
+    final p = peers.putIfAbsent(
+      id,
+      () => Peer(
+        id: id,
+        name: name,
+        addr: addr,
+        port: port,
+        rev: rev,
+        items: [],
+        lastSeen: now,
+        lastGoodContact: now,
+      ),
+    );
+    p
+      ..name = name
+      ..addr = addr
+      ..port = port
+      ..rev = rev
+      ..lastSeen = now
+      ..lastGoodContact = now
+      ..hasManifest = true;
+    _mergeDuplicatePeersFor(id);
+    p.items
+      ..clear()
+      ..addAll(list);
+    peerStatus[id] = 'OK (${list.length} items)';
+    if (notify) {
+      notifyListeners();
+    }
+  }
+
+  Future<bool> _probePeerAddress(
+    InternetAddress addr,
+    int port, {
+    Duration timeout = const Duration(milliseconds: 900),
+  }) async {
+    try {
+      if (_shouldSimulateDrop('tcp_out_sweep_probe')) return false;
+      final s = await Socket.connect(addr, port, timeout: timeout);
+      try {
+        await _sendManifestRequest(s);
+        ({String id, String name, int revision, List<RemoteItem> items})?
+        manifest;
+        try {
+          manifest = await _readManifestFromSocket(
+            s,
+            fallbackId: '${addr.address}:$port',
+            fallbackName: addr.address,
+          ).timeout(timeout);
+        } on _ProtocolMismatchException {
+          _incDiagnostic('sweep_protocol_mismatch');
+          return false;
+        }
+        if (manifest == null) return false;
+        _applyManifestToPeer(
+          addr: addr,
+          port: port,
+          manifest: manifest,
+          notify: false,
+        );
+        return true;
+      } finally {
+        await s.close();
+      }
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<String> sweepLocalSubnets() async {
+    final targets = buildSubnetSweepTargets(localIps);
+    if (targets.isEmpty) {
+      return 'Sweep skipped: no local IPv4 subnet detected';
+    }
+    var scanned = 0;
+    var found = 0;
+    final queue = Queue<String>.from(targets);
+    final workers = min(24, queue.length);
+
+    Future<void> worker() async {
+      while (queue.isNotEmpty) {
+        final host = queue.removeFirst();
+        scanned++;
+        InternetAddress? addr;
+        try {
+          addr = InternetAddress(host);
+        } catch (_) {
+          continue;
+        }
+        final ok = await _probePeerAddress(addr, _transferPort);
+        if (ok) {
+          found++;
+        }
+      }
+    }
+
+    await Future.wait(
+      List.generate(workers, (_) => worker()),
+    );
+    if (found > 0) {
+      notifyListeners();
+    }
+    return 'Sweep complete: scanned $scanned hosts, found $found peer${found == 1 ? '' : 's'}';
+  }
+
   Future<String> addPeerByAddress(String raw) async {
     var host = raw.trim();
     var port = _transferPort;
@@ -3800,38 +3982,12 @@ class Controller extends ChangeNotifier {
           return 'Version mismatch: local $_protocolMajor.x, peer ${e.remoteMajor ?? 'unknown'}.x';
         }
         if (manifest == null) return 'Bad response';
-        final id = manifest.id;
-        final name = manifest.name;
-        final rev = manifest.revision;
-        final list = manifest.items;
-        final now = DateTime.now();
-        final p = peers.putIfAbsent(
-          id,
-          () => Peer(
-            id: id,
-            name: name,
-            addr: addr!,
-            port: port,
-            rev: rev,
-            items: [],
-            lastSeen: now,
-            lastGoodContact: now,
-          ),
+        _applyManifestToPeer(
+          addr: addr,
+          port: port,
+          manifest: manifest,
         );
-        p
-          ..name = name
-          ..addr = addr
-          ..port = port
-          ..rev = rev
-          ..lastSeen = now
-          ..lastGoodContact = now;
-        _mergeDuplicatePeersFor(id);
-        p.items
-          ..clear()
-          ..addAll(list);
-        peerStatus[id] = 'OK (${list.length} items)';
-        notifyListeners();
-        return 'Connected: $name (${list.length} items)';
+        return 'Connected: ${manifest.name} (${manifest.items.length} items)';
       } finally {
         await s.close();
       }
