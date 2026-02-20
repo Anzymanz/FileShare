@@ -371,4 +371,16 @@ void main() {
       expect(computeTaskbarTransferProgress([empty]), 1);
     },
   );
+
+  test('parseLaunchSharePaths filters flags and de-duplicates paths', () {
+    final parsed = parseLaunchSharePaths([
+      '--start-in-tray',
+      r'C:\Temp\a.txt',
+      r'"C:\Temp\a.txt"',
+      r'C:\Temp\b.txt',
+      '--verbose',
+      '',
+    ]);
+    expect(parsed, [r'C:\Temp\a.txt', r'C:\Temp\b.txt']);
+  });
 }

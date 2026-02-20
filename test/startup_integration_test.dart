@@ -17,4 +17,17 @@ void main() {
     );
     expect(command, r'"C:\Apps\fileshare.exe" --start-in-tray');
   });
+
+  test(
+    'buildWindowsSendToBatchContents wraps executable and forwards args',
+    () {
+      final script = buildWindowsSendToBatchContents(
+        executablePath: r'C:\Program Files\FileShare\fileshare.exe',
+      );
+      expect(
+        script,
+        '@echo off\r\n"C:\\Program Files\\FileShare\\fileshare.exe" %*\r\n',
+      );
+    },
+  );
 }

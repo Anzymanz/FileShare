@@ -132,4 +132,15 @@ void main() {
     expect(preset.height, 600);
     expect(preset.displayHint, 'Center 450,320');
   });
+
+  test('AppSettings serializes Send To integration preference', () {
+    const settings = AppSettings(
+      darkMode: true,
+      themeIndex: 0,
+      soundOnNudge: false,
+      sendToIntegrationEnabled: true,
+    );
+    final restored = AppSettings.fromJson(settings.toJson());
+    expect(restored.sendToIntegrationEnabled, isTrue);
+  });
 }

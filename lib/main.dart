@@ -35,6 +35,7 @@ const String _latestReleasePageUrl =
 const String _windowsRunKey =
     r'HKCU\Software\Microsoft\Windows\CurrentVersion\Run';
 const String _windowsRunValueName = 'FileShare';
+const String _windowsSendToBatchName = 'FileShare.bat';
 const String _simLatencyEnv = 'FILESHARE_SIM_LATENCY_MS';
 const String _simDropEnv = 'FILESHARE_SIM_DROP_PERCENT';
 const int _protocolMajor = 1;
@@ -853,10 +854,29 @@ String buildWindowsStartupCommand({
   return '$quoted --start-in-tray';
 }
 
+String buildWindowsSendToBatchContents({required String executablePath}) {
+  final escaped = executablePath.replaceAll('"', '""');
+  return '@echo off\r\n"$escaped" %*\r\n';
+}
+
+List<String> parseLaunchSharePaths(List<String> args) {
+  final out = <String>[];
+  final seen = <String>{};
+  for (final raw in args) {
+    final value = raw.trim();
+    if (value.isEmpty) continue;
+    if (value.toLowerCase() == '--start-in-tray') continue;
+    if (value.startsWith('--')) continue;
+    _addDroppedPath(out, seen, value);
+  }
+  return out;
+}
+
 Future<void> main(List<String> args) async {
   final startInTrayRequested = args.any(
     (arg) => arg.trim().toLowerCase() == '--start-in-tray',
   );
+  final initialSharePaths = parseLaunchSharePaths(args);
   WidgetsFlutterBinding.ensureInitialized();
   await _diagnostics.initialize();
   FlutterError.onError = (details) {
@@ -886,6 +906,7 @@ Future<void> main(List<String> args) async {
         MyApp(
           initialSettings: savedAppSettings,
           startInTrayRequested: startInTrayRequested,
+          initialSharePaths: initialSharePaths,
         ),
       );
       _diagnostics.info('Application started');
@@ -924,10 +945,12 @@ class MyApp extends StatefulWidget {
     super.key,
     required this.initialSettings,
     required this.startInTrayRequested,
+    required this.initialSharePaths,
   });
 
   final AppSettings initialSettings;
   final bool startInTrayRequested;
+  final List<String> initialSharePaths;
 
   @override
   State<MyApp> createState() => _MyAppState();
@@ -940,6 +963,7 @@ class _MyAppState extends State<MyApp> {
   late bool minimizeToTray;
   late bool startWithWindows;
   late bool startInTrayOnLaunch;
+  late bool sendToIntegrationEnabled;
   late String roomChannel;
   late String sharedRoomKey;
   late String peerAllowlist;
@@ -964,6 +988,7 @@ class _MyAppState extends State<MyApp> {
     minimizeToTray = widget.initialSettings.minimizeToTray;
     startWithWindows = widget.initialSettings.startWithWindows;
     startInTrayOnLaunch = widget.initialSettings.startInTrayOnLaunch;
+    sendToIntegrationEnabled = widget.initialSettings.sendToIntegrationEnabled;
     roomChannel = widget.initialSettings.roomChannel;
     sharedRoomKey = widget.initialSettings.sharedRoomKey;
     peerAllowlist = widget.initialSettings.peerAllowlist;
@@ -986,6 +1011,7 @@ class _MyAppState extends State<MyApp> {
         minimizeToTray: minimizeToTray,
         startWithWindows: startWithWindows,
         startInTrayOnLaunch: startInTrayOnLaunch,
+        sendToIntegrationEnabled: sendToIntegrationEnabled,
         roomChannel: roomChannel,
         sharedRoomKey: sharedRoomKey,
         peerAllowlist: peerAllowlist,
@@ -1030,6 +1056,7 @@ class _MyAppState extends State<MyApp> {
         initialMinimizeToTray: minimizeToTray,
         initialStartWithWindows: startWithWindows,
         initialStartInTrayOnLaunch: startInTrayOnLaunch,
+        initialSendToIntegrationEnabled: sendToIntegrationEnabled,
         startInTrayRequested: widget.startInTrayRequested,
         initialRoomChannel: roomChannel,
         initialSharedRoomKey: sharedRoomKey,
@@ -1042,6 +1069,7 @@ class _MyAppState extends State<MyApp> {
         initialDuplicateHandlingMode: duplicateHandlingMode,
         initialShowPreviewPanel: showPreviewPanel,
         initialWindowLayoutPresets: windowLayoutPresets,
+        initialSharePaths: widget.initialSharePaths,
         onToggleTheme: () {
           setState(() => dark = !dark);
           unawaited(_persistSettings());
@@ -1064,6 +1092,10 @@ class _MyAppState extends State<MyApp> {
         },
         onStartInTrayOnLaunchChanged: (value) {
           setState(() => startInTrayOnLaunch = value);
+          unawaited(_persistSettings());
+        },
+        onSendToIntegrationChanged: (value) {
+          setState(() => sendToIntegrationEnabled = value);
           unawaited(_persistSettings());
         },
         onRoomChannelChanged: (value) {
@@ -1124,6 +1156,7 @@ class Home extends StatefulWidget {
     required this.initialMinimizeToTray,
     required this.initialStartWithWindows,
     required this.initialStartInTrayOnLaunch,
+    required this.initialSendToIntegrationEnabled,
     required this.startInTrayRequested,
     required this.initialRoomChannel,
     required this.initialSharedRoomKey,
@@ -1136,12 +1169,14 @@ class Home extends StatefulWidget {
     required this.initialDuplicateHandlingMode,
     required this.initialShowPreviewPanel,
     required this.initialWindowLayoutPresets,
+    required this.initialSharePaths,
     required this.onToggleTheme,
     required this.onSelectTheme,
     required this.onSoundOnNudgeChanged,
     required this.onMinimizeToTrayChanged,
     required this.onStartWithWindowsChanged,
     required this.onStartInTrayOnLaunchChanged,
+    required this.onSendToIntegrationChanged,
     required this.onRoomChannelChanged,
     required this.onSharedRoomKeyChanged,
     required this.onPeerAllowlistChanged,
@@ -1161,6 +1196,7 @@ class Home extends StatefulWidget {
   final bool initialMinimizeToTray;
   final bool initialStartWithWindows;
   final bool initialStartInTrayOnLaunch;
+  final bool initialSendToIntegrationEnabled;
   final bool startInTrayRequested;
   final String initialRoomChannel;
   final String initialSharedRoomKey;
@@ -1173,12 +1209,14 @@ class Home extends StatefulWidget {
   final DuplicateHandlingMode initialDuplicateHandlingMode;
   final bool initialShowPreviewPanel;
   final List<WindowLayoutPreset> initialWindowLayoutPresets;
+  final List<String> initialSharePaths;
   final VoidCallback onToggleTheme;
   final ValueChanged<int> onSelectTheme;
   final ValueChanged<bool> onSoundOnNudgeChanged;
   final ValueChanged<bool> onMinimizeToTrayChanged;
   final ValueChanged<bool> onStartWithWindowsChanged;
   final ValueChanged<bool> onStartInTrayOnLaunchChanged;
+  final ValueChanged<bool> onSendToIntegrationChanged;
   final ValueChanged<String> onRoomChannelChanged;
   final ValueChanged<String> onSharedRoomKeyChanged;
   final ValueChanged<String> onPeerAllowlistChanged;
@@ -1211,6 +1249,7 @@ class _HomeState extends State<Home>
   bool _minimizeToTray = false;
   bool _startWithWindows = false;
   bool _startInTrayOnLaunch = false;
+  bool _sendToIntegrationEnabled = false;
   String _roomChannel = '';
   String _sharedRoomKey = '';
   String _peerAllowlist = '';
@@ -1251,6 +1290,7 @@ class _HomeState extends State<Home>
     _minimizeToTray = widget.initialMinimizeToTray;
     _startWithWindows = widget.initialStartWithWindows;
     _startInTrayOnLaunch = widget.initialStartInTrayOnLaunch;
+    _sendToIntegrationEnabled = widget.initialSendToIntegrationEnabled;
     _roomChannel = widget.initialRoomChannel;
     _soundOnNudge = widget.initialSoundOnNudge;
     _sharedRoomKey = widget.initialSharedRoomKey;
@@ -1292,7 +1332,13 @@ class _HomeState extends State<Home>
     unawaited(windowManager.setPreventClose(true));
     unawaited(_initDesktopIntegrations());
     unawaited(_initFocus());
-    unawaited(c.start());
+    unawaited(() async {
+      await c.start();
+      if (widget.initialSharePaths.isNotEmpty) {
+        await c.addDropped(widget.initialSharePaths);
+      }
+    }());
+    unawaited(_refreshSendToIntegrationStatus());
     unawaited(() async {
       final loaded = await _loadFavoriteKeys();
       if (!mounted) return;
@@ -2191,6 +2237,63 @@ class _HomeState extends State<Home>
         : 'Start with Windows enabled';
   }
 
+  Future<File> _windowsSendToBatchFile() async {
+    String? appDataDir;
+    if (Platform.isWindows) {
+      appDataDir = Platform.environment['APPDATA'];
+    }
+    if (appDataDir == null || appDataDir.isEmpty) {
+      throw Exception('APPDATA is unavailable');
+    }
+    final dir = Directory(p.join(appDataDir, 'Microsoft', 'Windows', 'SendTo'));
+    await dir.create(recursive: true);
+    return File(p.join(dir.path, _windowsSendToBatchName));
+  }
+
+  Future<bool> _isWindowsSendToIntegrationInstalled() async {
+    if (!Platform.isWindows) return false;
+    try {
+      final batchFile = await _windowsSendToBatchFile();
+      return await batchFile.exists();
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> _refreshSendToIntegrationStatus() async {
+    if (!Platform.isWindows) return;
+    final installed = await _isWindowsSendToIntegrationInstalled();
+    if (!mounted || installed == _sendToIntegrationEnabled) return;
+    setState(() => _sendToIntegrationEnabled = installed);
+    widget.onSendToIntegrationChanged(installed);
+  }
+
+  Future<String> _applyWindowsSendToIntegration({required bool enabled}) async {
+    if (!Platform.isWindows) {
+      return 'Send To integration is Windows-only';
+    }
+    final executablePath = Platform.resolvedExecutable;
+    if (enabled && !_isValidStartupExecutable(executablePath)) {
+      return 'Unsupported executable path: $executablePath';
+    }
+    try {
+      final batchFile = await _windowsSendToBatchFile();
+      if (!enabled) {
+        if (await batchFile.exists()) {
+          await batchFile.delete();
+        }
+        return 'Send To integration disabled';
+      }
+      final contents = buildWindowsSendToBatchContents(
+        executablePath: executablePath,
+      );
+      await batchFile.writeAsString(contents, flush: true);
+      return 'Send To integration enabled';
+    } catch (e) {
+      return 'Failed to update Send To integration: $e';
+    }
+  }
+
   Future<void> _quitApplication() async {
     _isQuitting = true;
     _diagnostics.info('Application shutdown requested');
@@ -2577,6 +2680,8 @@ class _HomeState extends State<Home>
     String? updateStatus;
     String? startupStatus;
     bool applyingStartup = false;
+    String? sendToStatus;
+    bool applyingSendTo = false;
     String? layoutStatus;
     bool checkingUpdates = false;
     String? exportStatus;
@@ -2884,6 +2989,37 @@ class _HomeState extends State<Home>
                   if (startupStatus != null) ...[
                     const SizedBox(height: 4),
                     Text(startupStatus!),
+                  ],
+                  SwitchListTile.adaptive(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Send To integration'),
+                    subtitle: const Text(
+                      'Add "FileShare" under Explorer Send to for quick sharing',
+                    ),
+                    value: _sendToIntegrationEnabled,
+                    onChanged: applyingSendTo
+                        ? null
+                        : (value) async {
+                            setDialogState(() => applyingSendTo = true);
+                            final result = await _applyWindowsSendToIntegration(
+                              enabled: value,
+                            );
+                            if (!context.mounted) return;
+                            final installed =
+                                await _isWindowsSendToIntegrationInstalled();
+                            if (!context.mounted) return;
+                            setDialogState(() {
+                              applyingSendTo = false;
+                              sendToStatus = result;
+                              _sendToIntegrationEnabled = installed;
+                            });
+                            widget.onSendToIntegrationChanged(installed);
+                          },
+                  ),
+                  if (sendToStatus != null) ...[
+                    const SizedBox(height: 4),
+                    Text(sendToStatus!),
                   ],
                   const SizedBox(height: 8),
                   const Text('Window Layout Presets'),
@@ -8182,6 +8318,7 @@ class AppSettings {
     this.minimizeToTray = false,
     this.startWithWindows = false,
     this.startInTrayOnLaunch = false,
+    this.sendToIntegrationEnabled = false,
     this.roomChannel = '',
     this.sharedRoomKey = '',
     this.peerAllowlist = '',
@@ -8201,6 +8338,7 @@ class AppSettings {
   final bool minimizeToTray;
   final bool startWithWindows;
   final bool startInTrayOnLaunch;
+  final bool sendToIntegrationEnabled;
   final String roomChannel;
   final String sharedRoomKey;
   final String peerAllowlist;
@@ -8220,6 +8358,7 @@ class AppSettings {
     'minimizeToTray': minimizeToTray,
     'startWithWindows': startWithWindows,
     'startInTrayOnLaunch': startInTrayOnLaunch,
+    'sendToIntegrationEnabled': sendToIntegrationEnabled,
     'roomChannel': roomChannel,
     'sharedRoomKey': sharedRoomKey,
     'peerAllowlist': peerAllowlist,
@@ -8245,6 +8384,7 @@ class AppSettings {
       minimizeToTray: json['minimizeToTray'] == true,
       startWithWindows: json['startWithWindows'] == true,
       startInTrayOnLaunch: json['startInTrayOnLaunch'] == true,
+      sendToIntegrationEnabled: json['sendToIntegrationEnabled'] == true,
       roomChannel: normalizeRoomChannel((json['roomChannel'] as String? ?? '')),
       sharedRoomKey: (json['sharedRoomKey'] as String? ?? '').trim(),
       peerAllowlist: (json['peerAllowlist'] as String? ?? ''),
