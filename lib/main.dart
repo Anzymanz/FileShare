@@ -75,6 +75,7 @@ final bool _isTest =
     bool.fromEnvironment('FLUTTER_TEST') ||
     Platform.environment.containsKey('FLUTTER_TEST');
 final _Diagnostics _diagnostics = _Diagnostics();
+final _AuditTrail _auditTrail = _AuditTrail();
 
 final ffi.DynamicLibrary _user32 = ffi.DynamicLibrary.open('user32.dll');
 
@@ -827,6 +828,109 @@ double computeTaskbarTransferProgress(Iterable<TransferEntry> transfers) {
   return (weightedDone / weightedTotal).clamp(0.0, 1.0).toDouble();
 }
 
+class AuditChainVerification {
+  const AuditChainVerification({
+    required this.valid,
+    required this.validEntries,
+    required this.lastHash,
+    this.firstInvalidIndex,
+  });
+
+  final bool valid;
+  final int validEntries;
+  final String lastHash;
+  final int? firstInvalidIndex;
+}
+
+dynamic _normalizeAuditValue(dynamic value) {
+  if (value is Map) {
+    final out = SplayTreeMap<String, dynamic>();
+    for (final entry in value.entries) {
+      final key = entry.key;
+      if (key is! String) continue;
+      out[key] = _normalizeAuditValue(entry.value);
+    }
+    return out;
+  }
+  if (value is List) {
+    return value.map(_normalizeAuditValue).toList(growable: false);
+  }
+  if (value is DateTime) {
+    return value.toUtc().toIso8601String();
+  }
+  if (value is num || value is String || value is bool || value == null) {
+    return value;
+  }
+  return value.toString();
+}
+
+String computeAuditEntryHash(Map<String, dynamic> entry) {
+  final payload = Map<String, dynamic>.from(entry);
+  payload.remove('hash');
+  final canonical = _normalizeAuditValue(payload);
+  final digest = crypto.sha256.convert(utf8.encode(jsonEncode(canonical)));
+  return digest.toString();
+}
+
+Map<String, dynamic> buildAuditLogEntry({
+  required int seq,
+  required String event,
+  required Map<String, dynamic> data,
+  required String prevHash,
+  DateTime? timestampUtc,
+}) {
+  final stamp = (timestampUtc ?? DateTime.now()).toUtc().toIso8601String();
+  final entry = <String, dynamic>{
+    'seq': seq,
+    'ts': stamp,
+    'event': event.trim(),
+    'data': _normalizeAuditValue(data),
+    'prevHash': prevHash,
+  };
+  entry['hash'] = computeAuditEntryHash(entry);
+  return entry;
+}
+
+AuditChainVerification verifyAuditChainEntries(
+  List<Map<String, dynamic>> entries,
+) {
+  var prevHash = '';
+  var expectedSeq = 1;
+  for (var i = 0; i < entries.length; i++) {
+    final entry = entries[i];
+    final seq = (entry['seq'] as num?)?.toInt();
+    final listedPrevHash = entry['prevHash'] as String?;
+    final listedHash = entry['hash'] as String?;
+    if (seq != expectedSeq ||
+        listedPrevHash != prevHash ||
+        listedHash == null ||
+        listedHash.isEmpty) {
+      return AuditChainVerification(
+        valid: false,
+        validEntries: i,
+        lastHash: prevHash,
+        firstInvalidIndex: i,
+      );
+    }
+    final computed = computeAuditEntryHash(entry);
+    if (computed != listedHash) {
+      return AuditChainVerification(
+        valid: false,
+        validEntries: i,
+        lastHash: prevHash,
+        firstInvalidIndex: i,
+      );
+    }
+    prevHash = listedHash;
+    expectedSeq++;
+  }
+  return AuditChainVerification(
+    valid: true,
+    validEntries: entries.length,
+    lastHash: prevHash,
+  );
+}
+
 int _clampRateLimitMBps(Object? raw, int fallback) {
   final parsed = (raw is num) ? raw.toInt() : int.tryParse('$raw');
   if (parsed == null) return fallback;
@@ -880,6 +984,7 @@ Future<void> main(List<String> args) async {
   final initialSharePaths = parseLaunchSharePaths(args);
   WidgetsFlutterBinding.ensureInitialized();
   await _diagnostics.initialize();
+  await _auditTrail.initialize();
   FlutterError.onError = (details) {
     FlutterError.presentError(details);
     _diagnostics.captureFlutterError(details);
@@ -1912,6 +2017,14 @@ class _HomeState extends State<Home>
         await src.copy(p.join(bundle.path, src.uri.pathSegments.last));
       }
     }
+    await for (final entity in appDataDir.list(recursive: false)) {
+      if (entity is! File) continue;
+      final name = p.basename(entity.path);
+      if (!name.startsWith('audit')) continue;
+      try {
+        await entity.copy(p.join(bundle.path, name));
+      } catch (_) {}
+    }
 
     final settingsFile = await _appSettingsFile();
     if (await settingsFile.exists()) {
@@ -1944,6 +2057,18 @@ class _HomeState extends State<Home>
       flush: true,
     );
     return 'Diagnostics exported: ${bundle.path}';
+  }
+
+  Future<String> _exportAuditLogBundle() async {
+    final targetRoot = await fs.getDirectoryPath(
+      initialDirectory: _lastDownloadDirectory,
+      confirmButtonText: 'Export',
+    );
+    if (targetRoot == null || targetRoot.trim().isEmpty) {
+      return 'Audit export canceled';
+    }
+    _lastDownloadDirectory = targetRoot;
+    return _auditTrail.export(targetRoot);
   }
 
   @override
@@ -2719,6 +2844,8 @@ class _HomeState extends State<Home>
     bool checkingUpdates = false;
     String? exportStatus;
     bool exportingDiagnostics = false;
+    String? auditExportStatus;
+    bool exportingAuditLog = false;
     bool profilingEnabled = c.latencyProfilingEnabled;
     const transferRateOptions = <int>[5, 10, 25, 50, 100, 200, 500, 1000];
     const globalRateOptions = <int>[10, 25, 50, 100, 200, 500, 1000, 2000];
@@ -3278,6 +3405,27 @@ class _HomeState extends State<Home>
                     children: [
                       const Spacer(),
                       TextButton(
+                        onPressed: exportingAuditLog
+                            ? null
+                            : () async {
+                                setDialogState(() {
+                                  exportingAuditLog = true;
+                                  auditExportStatus = 'Exporting audit log...';
+                                });
+                                final result = await _exportAuditLogBundle();
+                                if (!context.mounted) return;
+                                setDialogState(() {
+                                  exportingAuditLog = false;
+                                  auditExportStatus = result;
+                                });
+                              },
+                        child: Text(
+                          exportingAuditLog
+                              ? 'Exporting Audit...'
+                              : 'Export Audit Log',
+                        ),
+                      ),
+                      TextButton(
                         onPressed: exportingDiagnostics
                             ? null
                             : () async {
@@ -3303,6 +3451,10 @@ class _HomeState extends State<Home>
                   if (exportStatus != null) ...[
                     const SizedBox(height: 4),
                     Text(exportStatus!),
+                  ],
+                  if (auditExportStatus != null) ...[
+                    const SizedBox(height: 4),
+                    Text(auditExportStatus!),
                   ],
                   const SizedBox(height: 8),
                   const Text('Manual Peer Connect'),
@@ -5814,6 +5966,17 @@ class Controller extends ChangeNotifier {
         lastSeenAt: now,
         attempts: 1,
       );
+      unawaited(
+        _auditTrail.append('handoff_requested', <String, dynamic>{
+          'requestKey': key,
+          'peerId': peerId,
+          'peerName': peerName,
+          'remoteAddress': remoteAddress,
+          'remotePort': remotePort,
+          'itemId': itemId,
+          'itemName': itemName,
+        }),
+      );
     } else {
       existing.lastSeenAt = now;
       existing.attempts++;
@@ -5834,13 +5997,32 @@ class Controller extends ChangeNotifier {
     final request = _pendingHandoffRequests.remove(key);
     if (request == null) return false;
     _handoffApprovals[key] = DateTime.now().add(_handoffApprovalTtl);
+    unawaited(
+      _auditTrail.append('handoff_approved', <String, dynamic>{
+        'requestKey': key,
+        'peerId': request.peerId,
+        'peerName': request.peerName,
+        'itemId': request.itemId,
+        'itemName': request.itemName,
+      }),
+    );
     notifyListeners();
     return true;
   }
 
   bool denyHandoffRequest(String key) {
-    final removed = _pendingHandoffRequests.remove(key) != null;
+    final request = _pendingHandoffRequests.remove(key);
+    final removed = request != null;
     if (removed) {
+      unawaited(
+        _auditTrail.append('handoff_denied', <String, dynamic>{
+          'requestKey': key,
+          'peerId': request.peerId,
+          'peerName': request.peerName,
+          'itemId': request.itemId,
+          'itemName': request.itemName,
+        }),
+      );
       notifyListeners();
     }
     return removed;
@@ -7542,6 +7724,15 @@ class Controller extends ChangeNotifier {
       totalBytes: totalBytes,
       startedAt: DateTime.now(),
     );
+    unawaited(
+      _auditTrail.append('transfer_started', <String, dynamic>{
+        'transferId': id,
+        'direction': direction.name,
+        'name': name,
+        'peerName': peerName,
+        'totalBytes': totalBytes,
+      }),
+    );
     _notifyTransferListeners(force: true);
     return id;
   }
@@ -7565,6 +7756,22 @@ class Controller extends ChangeNotifier {
     if (state != TransferState.canceled) {
       _canceledTransfers.remove(id);
     }
+    final elapsedMs = entry.updatedAt
+        .difference(entry.startedAt)
+        .inMilliseconds;
+    unawaited(
+      _auditTrail.append('transfer_finished', <String, dynamic>{
+        'transferId': id,
+        'state': state.name,
+        'direction': entry.direction.name,
+        'name': entry.name,
+        'peerName': entry.peerName,
+        'transferredBytes': entry.transferredBytes,
+        'totalBytes': entry.totalBytes,
+        'elapsedMs': elapsedMs,
+        'error': error,
+      }),
+    );
     _scheduleTransferAutoDismiss(id);
     _trimTransferHistory();
     _notifyTransferListeners(force: true);
@@ -8957,6 +9164,154 @@ Future<void> _saveAppSettings(AppSettings settings) async {
     final file = await _appSettingsFile();
     await file.writeAsString(jsonEncode(settings.toJson()), flush: true);
   } catch (_) {}
+}
+
+class _AuditTrail {
+  static const String _baseName = 'audit.log';
+
+  File? _auditFile;
+  Future<void> _writeChain = Future<void>.value();
+  int _nextSeq = 1;
+  String _lastHash = '';
+
+  Future<void> initialize() async {
+    try {
+      final dir = await _appDataDir();
+      _auditFile = File(p.join(dir.path, _baseName));
+      await _hydrateChainState();
+      await append('session_start', <String, dynamic>{
+        'app': 'FileShare',
+        'version': '$_protocolMajor.$_protocolMinor',
+        'os': Platform.operatingSystem,
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _hydrateChainState() async {
+    final file = _auditFile;
+    if (file == null || !await file.exists()) {
+      _nextSeq = 1;
+      _lastHash = '';
+      return;
+    }
+    final entries = await _readAuditEntries(file);
+    final verification = verifyAuditChainEntries(entries);
+    if (verification.valid) {
+      _nextSeq = entries.length + 1;
+      _lastHash = verification.lastHash;
+      return;
+    }
+
+    final dir = file.parent;
+    final stamp = DateTime.now().toIso8601String().replaceAll(':', '-');
+    final tampered = File(p.join(dir.path, 'audit_tampered_$stamp.log'));
+    try {
+      await file.rename(tampered.path);
+    } catch (_) {
+      try {
+        await file.copy(tampered.path);
+        await file.delete();
+      } catch (_) {}
+    }
+    _nextSeq = 1;
+    _lastHash = '';
+  }
+
+  Future<List<Map<String, dynamic>>> _readAuditEntries(File file) async {
+    try {
+      final lines = await file.readAsLines();
+      final out = <Map<String, dynamic>>[];
+      for (final line in lines) {
+        final trimmed = line.trim();
+        if (trimmed.isEmpty) continue;
+        Map<String, dynamic>? parsed;
+        try {
+          final data = jsonDecode(trimmed);
+          if (data is Map<String, dynamic>) {
+            parsed = data;
+          } else if (data is Map) {
+            final asMap = <String, dynamic>{};
+            for (final entry in data.entries) {
+              if (entry.key is String) {
+                asMap[entry.key as String] = entry.value;
+              }
+            }
+            parsed = asMap;
+          }
+        } catch (_) {}
+        if (parsed == null) continue;
+        out.add(parsed);
+      }
+      return out;
+    } catch (_) {
+      return const <Map<String, dynamic>>[];
+    }
+  }
+
+  Future<void> append(String event, Map<String, dynamic> data) async {
+    final file = _auditFile;
+    if (file == null) return;
+    final eventName = event.trim();
+    if (eventName.isEmpty) return;
+
+    _writeChain = _writeChain
+        .then((_) async {
+          final entry = buildAuditLogEntry(
+            seq: _nextSeq,
+            event: eventName,
+            data: data,
+            prevHash: _lastHash,
+          );
+          await file.writeAsString(
+            '${jsonEncode(entry)}\n',
+            mode: FileMode.writeOnlyAppend,
+            flush: true,
+          );
+          _nextSeq++;
+          _lastHash = entry['hash'] as String? ?? _lastHash;
+        })
+        .catchError((_) {});
+    await _writeChain;
+  }
+
+  Future<String> export(String targetRoot) async {
+    final file = _auditFile;
+    if (file == null) return 'Audit log unavailable';
+    final stamp = DateTime.now().toIso8601String().replaceAll(':', '-');
+    final exportDir = Directory(p.join(targetRoot, 'fileshare_audit_$stamp'));
+    await exportDir.create(recursive: true);
+
+    final appDir = await _appDataDir();
+    final exportedFiles = <String>[];
+    await for (final entity in appDir.list(recursive: false)) {
+      if (entity is! File) continue;
+      final name = p.basename(entity.path);
+      if (!name.startsWith('audit')) continue;
+      try {
+        final copied = await entity.copy(p.join(exportDir.path, name));
+        exportedFiles.add(p.basename(copied.path));
+      } catch (_) {}
+    }
+
+    final entries = await _readAuditEntries(file);
+    final verification = verifyAuditChainEntries(entries);
+    final summary = <String, dynamic>{
+      'exportedAt': DateTime.now().toIso8601String(),
+      'entries': entries.length,
+      'validChain': verification.valid,
+      'validEntries': verification.validEntries,
+      'lastHash': verification.lastHash,
+      'firstInvalidIndex': verification.firstInvalidIndex,
+      'files': exportedFiles..sort(),
+    };
+    await File(p.join(exportDir.path, 'summary.json')).writeAsString(
+      const JsonEncoder.withIndent('  ').convert(summary),
+      flush: true,
+    );
+    return verification.valid
+        ? 'Audit exported: ${exportDir.path}'
+        : 'Audit exported with chain warning: ${exportDir.path}';
+  }
 }
 
 class _Diagnostics {
