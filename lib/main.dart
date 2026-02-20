@@ -53,6 +53,7 @@ const int _previewTextMaxBytes = 96 * 1024;
 const int _maxItemNoteChars = 300;
 const int _maxConcurrentInboundClients = 64;
 const int _maxConcurrentTransfersPerPeer = 3;
+const int _maxQueuedDownloads = 512;
 const int _defaultTransferRateLimitMBps = 50;
 const int _defaultGlobalRateLimitMBps = 200;
 const int _defaultRoomKeyExpiryMinutes = 0;
@@ -1478,6 +1479,9 @@ class _HomeState extends State<Home>
   Set<String> _favoriteKeys = <String>{};
   Set<String> _selectedItemKeys = <String>{};
   Map<String, String> _itemNotes = <String, String>{};
+  List<DownloadQueueEntry> _downloadQueue = <DownloadQueueEntry>[];
+  int _downloadQueueCounter = 0;
+  bool _downloadQueueRunnerActive = false;
   final Map<String, String> _previewCachePaths = <String, String>{};
   final Map<String, Future<String?>> _previewLoadsInFlight =
       <String, Future<String?>>{};
@@ -1840,35 +1844,293 @@ class _HomeState extends State<Home>
     );
     if (location == null) return;
     _lastDownloadDirectory = p.dirname(location.path);
-    try {
-      final downloaded = await c.downloadRemoteToPath(
-        item,
-        location.path,
-        duplicateHandlingMode: _duplicateHandlingMode,
-      );
-      if (!downloaded) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('Skipped existing file')));
-        return;
-      }
-      if (!mounted) return;
+    final enqueue = _enqueueDownloads(<({ShareItem item, String outputPath})>[
+      (item: item, outputPath: location.path),
+    ], duplicateHandlingMode: _duplicateHandlingMode);
+    if (!mounted) return;
+    if (enqueue.queued == 0) {
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text('Downloaded $suggestedName')));
-    } catch (e) {
-      if (!mounted) return;
-      if (e is _TransferCanceledException) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('Download canceled')));
-        return;
-      }
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Download failed: $e')));
+      ).showSnackBar(const SnackBar(content: Text('Download queue is full')));
+      return;
     }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          enqueue.dropped > 0
+              ? 'Queued $suggestedName (queue full for ${enqueue.dropped} item)'
+              : 'Queued $suggestedName',
+        ),
+      ),
+    );
+  }
+
+  DownloadQueueEntry? _downloadQueueEntryById(String queueId) {
+    for (final entry in _downloadQueue) {
+      if (entry.id == queueId) return entry;
+    }
+    return null;
+  }
+
+  DownloadQueueEntry? _nextQueuedDownloadEntry() {
+    for (final entry in _downloadQueue) {
+      if (entry.state == DownloadQueueState.queued) {
+        return entry;
+      }
+    }
+    return null;
+  }
+
+  ({int queued, int dropped}) _enqueueDownloads(
+    List<({ShareItem item, String outputPath})> requests, {
+    required DuplicateHandlingMode duplicateHandlingMode,
+  }) {
+    if (requests.isEmpty) return (queued: 0, dropped: 0);
+    if (!mounted) return (queued: 0, dropped: requests.length);
+    final available = max(0, _maxQueuedDownloads - _downloadQueue.length);
+    final queueCount = min(available, requests.length);
+    if (queueCount <= 0) return (queued: 0, dropped: requests.length);
+
+    final queuedEntries = <DownloadQueueEntry>[];
+    for (var i = 0; i < queueCount; i++) {
+      final request = requests[i];
+      _downloadQueueCounter++;
+      queuedEntries.add(
+        DownloadQueueEntry(
+          id: 'dq-${DateTime.now().microsecondsSinceEpoch}-$_downloadQueueCounter',
+          item: request.item,
+          outputPath: request.outputPath,
+          duplicateHandlingMode: duplicateHandlingMode,
+          createdAt: DateTime.now(),
+        ),
+      );
+    }
+    setState(
+      () => _downloadQueue = <DownloadQueueEntry>[
+        ..._downloadQueue,
+        ...queuedEntries,
+      ],
+    );
+    unawaited(_runDownloadQueue());
+    return (queued: queueCount, dropped: requests.length - queueCount);
+  }
+
+  Future<void> _runDownloadQueue() async {
+    if (_downloadQueueRunnerActive) return;
+    _downloadQueueRunnerActive = true;
+    try {
+      while (mounted) {
+        final entry = _nextQueuedDownloadEntry();
+        if (entry == null) break;
+        if (mounted) {
+          setState(() {
+            entry
+              ..state = DownloadQueueState.running
+              ..updatedAt = DateTime.now()
+              ..error = null
+              ..attempts = entry.attempts + 1;
+          });
+        } else {
+          entry
+            ..state = DownloadQueueState.running
+            ..updatedAt = DateTime.now()
+            ..error = null
+            ..attempts = entry.attempts + 1;
+        }
+        try {
+          final downloaded = await c.downloadRemoteToPath(
+            entry.item,
+            entry.outputPath,
+            duplicateHandlingMode: entry.duplicateHandlingMode,
+            onTransferStart: (transferId) {
+              entry
+                ..transferId = transferId
+                ..updatedAt = DateTime.now();
+              if (mounted) {
+                setState(() {});
+              }
+            },
+          );
+          if (entry.state == DownloadQueueState.paused ||
+              entry.state == DownloadQueueState.canceled) {
+            continue;
+          }
+          if (mounted) {
+            setState(() {
+              entry
+                ..state = downloaded
+                    ? DownloadQueueState.completed
+                    : DownloadQueueState.skipped
+                ..updatedAt = DateTime.now()
+                ..error = null;
+            });
+          } else {
+            entry
+              ..state = downloaded
+                  ? DownloadQueueState.completed
+                  : DownloadQueueState.skipped
+              ..updatedAt = DateTime.now()
+              ..error = null;
+          }
+        } on _TransferCanceledException {
+          if (entry.state != DownloadQueueState.paused &&
+              entry.state != DownloadQueueState.canceled) {
+            if (mounted) {
+              setState(() {
+                entry
+                  ..state = DownloadQueueState.canceled
+                  ..updatedAt = DateTime.now()
+                  ..error = null;
+              });
+            } else {
+              entry
+                ..state = DownloadQueueState.canceled
+                ..updatedAt = DateTime.now()
+                ..error = null;
+            }
+          }
+        } catch (e) {
+          if (entry.state != DownloadQueueState.paused &&
+              entry.state != DownloadQueueState.canceled) {
+            if (mounted) {
+              setState(() {
+                entry
+                  ..state = DownloadQueueState.failed
+                  ..updatedAt = DateTime.now()
+                  ..error = '$e';
+              });
+            } else {
+              entry
+                ..state = DownloadQueueState.failed
+                ..updatedAt = DateTime.now()
+                ..error = '$e';
+            }
+          }
+        } finally {
+          entry.transferId = null;
+        }
+      }
+    } finally {
+      _downloadQueueRunnerActive = false;
+    }
+  }
+
+  void _pauseQueuedDownload(String queueId) {
+    final entry = _downloadQueueEntryById(queueId);
+    if (entry == null) return;
+    if (entry.state == DownloadQueueState.queued) {
+      setState(() {
+        entry
+          ..state = DownloadQueueState.paused
+          ..updatedAt = DateTime.now();
+      });
+      return;
+    }
+    if (entry.state == DownloadQueueState.running) {
+      final transferId = entry.transferId;
+      setState(() {
+        entry
+          ..state = DownloadQueueState.paused
+          ..updatedAt = DateTime.now();
+      });
+      if (transferId != null) {
+        c.cancelTransfer(transferId);
+      }
+    }
+  }
+
+  void _resumeQueuedDownload(String queueId) {
+    final entry = _downloadQueueEntryById(queueId);
+    if (entry == null) return;
+    if (entry.state == DownloadQueueState.running) return;
+    setState(() {
+      entry
+        ..state = DownloadQueueState.queued
+        ..updatedAt = DateTime.now()
+        ..error = null;
+    });
+    unawaited(_runDownloadQueue());
+  }
+
+  void _retryQueuedDownload(String queueId) {
+    final entry = _downloadQueueEntryById(queueId);
+    if (entry == null) return;
+    if (entry.state == DownloadQueueState.running) return;
+    setState(() {
+      entry
+        ..state = DownloadQueueState.queued
+        ..updatedAt = DateTime.now()
+        ..error = null;
+    });
+    unawaited(_runDownloadQueue());
+  }
+
+  void _cancelQueuedDownload(String queueId) {
+    final entry = _downloadQueueEntryById(queueId);
+    if (entry == null) return;
+    if (entry.state == DownloadQueueState.running) {
+      final transferId = entry.transferId;
+      setState(() {
+        entry
+          ..state = DownloadQueueState.canceled
+          ..updatedAt = DateTime.now();
+      });
+      if (transferId != null) {
+        c.cancelTransfer(transferId);
+      }
+      return;
+    }
+    if (entry.state == DownloadQueueState.canceled) return;
+    setState(() {
+      entry
+        ..state = DownloadQueueState.canceled
+        ..updatedAt = DateTime.now();
+    });
+  }
+
+  void _removeQueuedDownload(String queueId) {
+    final entry = _downloadQueueEntryById(queueId);
+    if (entry == null) return;
+    if (entry.state == DownloadQueueState.running) {
+      final transferId = entry.transferId;
+      if (transferId != null) {
+        c.cancelTransfer(transferId);
+      }
+    }
+    setState(() {
+      _downloadQueue = _downloadQueue
+          .where((entry) => entry.id != queueId)
+          .toList();
+    });
+    unawaited(_runDownloadQueue());
+  }
+
+  void _moveQueuedDownload(String queueId, int delta) {
+    final index = _downloadQueue.indexWhere((entry) => entry.id == queueId);
+    if (index < 0) return;
+    final entry = _downloadQueue[index];
+    if (entry.state != DownloadQueueState.queued &&
+        entry.state != DownloadQueueState.paused) {
+      return;
+    }
+    final target = (index + delta).clamp(0, _downloadQueue.length - 1);
+    if (target == index) return;
+    setState(() {
+      final next = List<DownloadQueueEntry>.from(_downloadQueue);
+      next.removeAt(index);
+      next.insert(target, entry);
+      _downloadQueue = next;
+    });
+  }
+
+  void _clearFinishedQueuedDownloads() {
+    setState(() {
+      _downloadQueue = _downloadQueue.where((entry) {
+        return entry.state == DownloadQueueState.queued ||
+            entry.state == DownloadQueueState.running ||
+            entry.state == DownloadQueueState.paused;
+      }).toList();
+    });
   }
 
   Future<String?> _resolvePreviewPath(
@@ -1995,41 +2257,26 @@ class _HomeState extends State<Home>
     );
     if (targetDirectory == null || targetDirectory.trim().isEmpty) return;
     _lastDownloadDirectory = targetDirectory;
-
-    var completed = 0;
-    var failed = 0;
-    var canceled = 0;
-    var skipped = 0;
-    for (final item in remoteItems) {
-      final outputPath = _buildBatchDownloadPath(targetDirectory, item);
-      try {
-        final downloaded = await c.downloadRemoteToPath(
-          item,
-          outputPath,
-          duplicateHandlingMode: _duplicateHandlingMode,
-        );
-        if (downloaded) {
-          completed++;
-        } else {
-          skipped++;
-        }
-      } on _TransferCanceledException {
-        canceled++;
-        break;
-      } catch (_) {
-        failed++;
-      }
-    }
+    final requests = remoteItems
+        .map(
+          (item) => (
+            item: item,
+            outputPath: _buildBatchDownloadPath(targetDirectory, item),
+          ),
+        )
+        .toList(growable: false);
+    final enqueue = _enqueueDownloads(
+      requests,
+      duplicateHandlingMode: _duplicateHandlingMode,
+    );
     if (!mounted) return;
-    final parts = <String>[
-      '$completed downloaded',
-      if (skipped > 0) '$skipped skipped',
-      if (failed > 0) '$failed failed',
-      if (canceled > 0) '$canceled canceled',
-    ];
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text('Download all from $ownerName: ${parts.join(', ')}'),
+        content: Text(
+          enqueue.dropped > 0
+              ? 'Queued ${enqueue.queued} from $ownerName (${enqueue.dropped} dropped: queue full)'
+              : 'Queued ${enqueue.queued} from $ownerName',
+        ),
       ),
     );
   }
@@ -2049,39 +2296,27 @@ class _HomeState extends State<Home>
         if (ownerOrder != 0) return ownerOrder;
         return a.rel.compareTo(b.rel);
       });
-    var completed = 0;
-    var failed = 0;
-    var canceled = 0;
-    var skipped = 0;
-    for (final item in sorted) {
-      final outputPath = _buildBatchDownloadPath(targetDirectory, item);
-      try {
-        final downloaded = await c.downloadRemoteToPath(
-          item,
-          outputPath,
-          duplicateHandlingMode: _duplicateHandlingMode,
-        );
-        if (downloaded) {
-          completed++;
-        } else {
-          skipped++;
-        }
-      } on _TransferCanceledException {
-        canceled++;
-        break;
-      } catch (_) {
-        failed++;
-      }
-    }
+    final requests = sorted
+        .map(
+          (item) => (
+            item: item,
+            outputPath: _buildBatchDownloadPath(targetDirectory, item),
+          ),
+        )
+        .toList(growable: false);
+    final enqueue = _enqueueDownloads(
+      requests,
+      duplicateHandlingMode: _duplicateHandlingMode,
+    );
     if (!mounted) return;
-    final parts = <String>[
-      '$completed downloaded',
-      if (skipped > 0) '$skipped skipped',
-      if (failed > 0) '$failed failed',
-      if (canceled > 0) '$canceled canceled',
-    ];
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Download selected: ${parts.join(', ')}')),
+      SnackBar(
+        content: Text(
+          enqueue.dropped > 0
+              ? 'Queued ${enqueue.queued} selected (${enqueue.dropped} dropped: queue full)'
+              : 'Queued ${enqueue.queued} selected',
+        ),
+      ),
     );
   }
 
@@ -2937,9 +3172,20 @@ class _HomeState extends State<Home>
                         bottom: 16,
                         child: _TransferPanel(
                           transfers: c.transfers,
+                          downloadQueue: _downloadQueue,
                           onClearFinished: c.clearFinishedTransfers,
                           onCancelTransfer: c.cancelTransfer,
                           onOpenTransferLocation: c.openTransferLocation,
+                          onClearFinishedQueue: _clearFinishedQueuedDownloads,
+                          onPauseQueueEntry: _pauseQueuedDownload,
+                          onResumeQueueEntry: _resumeQueuedDownload,
+                          onRetryQueueEntry: _retryQueuedDownload,
+                          onCancelQueueEntry: _cancelQueuedDownload,
+                          onRemoveQueueEntry: _removeQueuedDownload,
+                          onMoveQueueEntryUp: (id) =>
+                              _moveQueuedDownload(id, -1),
+                          onMoveQueueEntryDown: (id) =>
+                              _moveQueuedDownload(id, 1),
                         ),
                       ),
                   ],
@@ -5744,15 +5990,33 @@ class _IconTileState extends State<IconTile> {
 class _TransferPanel extends StatelessWidget {
   const _TransferPanel({
     required this.transfers,
+    required this.downloadQueue,
     required this.onClearFinished,
     required this.onCancelTransfer,
     required this.onOpenTransferLocation,
+    required this.onClearFinishedQueue,
+    required this.onPauseQueueEntry,
+    required this.onResumeQueueEntry,
+    required this.onRetryQueueEntry,
+    required this.onCancelQueueEntry,
+    required this.onRemoveQueueEntry,
+    required this.onMoveQueueEntryUp,
+    required this.onMoveQueueEntryDown,
   });
 
   final List<TransferEntry> transfers;
+  final List<DownloadQueueEntry> downloadQueue;
   final VoidCallback onClearFinished;
   final void Function(String transferId) onCancelTransfer;
   final void Function(String transferId) onOpenTransferLocation;
+  final VoidCallback onClearFinishedQueue;
+  final void Function(String queueId) onPauseQueueEntry;
+  final void Function(String queueId) onResumeQueueEntry;
+  final void Function(String queueId) onRetryQueueEntry;
+  final void Function(String queueId) onCancelQueueEntry;
+  final void Function(String queueId) onRemoveQueueEntry;
+  final void Function(String queueId) onMoveQueueEntryUp;
+  final void Function(String queueId) onMoveQueueEntryDown;
 
   @override
   Widget build(BuildContext context) {
@@ -5761,6 +6025,18 @@ class _TransferPanel extends StatelessWidget {
         .where((t) => t.state == TransferState.running)
         .length;
     final finished = transfers.length - active;
+    final queueActive = downloadQueue
+        .where(
+          (entry) =>
+              entry.state == DownloadQueueState.queued ||
+              entry.state == DownloadQueueState.running ||
+              entry.state == DownloadQueueState.paused,
+        )
+        .length;
+    final queueFinished = downloadQueue.length - queueActive;
+    final transferById = <String, TransferEntry>{
+      for (final transfer in transfers) transfer.id: transfer,
+    };
 
     return Align(
       alignment: Alignment.bottomRight,
@@ -5792,36 +6068,252 @@ class _TransferPanel extends StatelessWidget {
                     const Icon(Icons.swap_horiz, size: 16),
                     const SizedBox(width: 6),
                     Text(
-                      'Transfers: $active active, $finished finished',
+                      'Transfers: $active active, $finished done',
                       style: theme.textTheme.labelLarge,
                     ),
+                    const SizedBox(width: 8),
+                    Text(
+                      '| Queue: $queueActive active, $queueFinished done',
+                      style: theme.textTheme.labelMedium,
+                    ),
                     const Spacer(),
-                    if (finished > 0)
+                    if (finished > 0 || queueFinished > 0)
                       TextButton(
-                        onPressed: onClearFinished,
-                        child: const Text('Clear'),
+                        onPressed: () {
+                          onClearFinished();
+                          onClearFinishedQueue();
+                        },
+                        child: const Text('Clear Done'),
                       ),
                   ],
                 ),
                 const SizedBox(height: 4),
                 ConstrainedBox(
-                  constraints: const BoxConstraints(maxHeight: 260),
-                  child: ListView.separated(
-                    shrinkWrap: true,
-                    itemCount: transfers.length,
-                    separatorBuilder: (_, __) => const SizedBox(height: 8),
-                    itemBuilder: (context, index) {
-                      return _TransferRow(
-                        transfer: transfers[index],
-                        onCancelTransfer: onCancelTransfer,
-                        onOpenTransferLocation: onOpenTransferLocation,
-                      );
-                    },
+                  constraints: const BoxConstraints(maxHeight: 300),
+                  child: SingleChildScrollView(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (transfers.isNotEmpty) ...[
+                          Text(
+                            'Recent transfers',
+                            style: theme.textTheme.labelMedium,
+                          ),
+                          const SizedBox(height: 6),
+                          for (final transfer in transfers) ...[
+                            _TransferRow(
+                              transfer: transfer,
+                              onCancelTransfer: onCancelTransfer,
+                              onOpenTransferLocation: onOpenTransferLocation,
+                            ),
+                            const SizedBox(height: 8),
+                          ],
+                        ],
+                        if (downloadQueue.isNotEmpty) ...[
+                          if (transfers.isNotEmpty) const Divider(height: 10),
+                          Text(
+                            'Download queue',
+                            style: theme.textTheme.labelMedium,
+                          ),
+                          const SizedBox(height: 6),
+                          for (var i = 0; i < downloadQueue.length; i++) ...[
+                            _QueuedDownloadRow(
+                              entry: downloadQueue[i],
+                              linkedTransfer:
+                                  transferById[downloadQueue[i].transferId],
+                              index: i,
+                              total: downloadQueue.length,
+                              onPause: onPauseQueueEntry,
+                              onResume: onResumeQueueEntry,
+                              onRetry: onRetryQueueEntry,
+                              onCancel: onCancelQueueEntry,
+                              onRemove: onRemoveQueueEntry,
+                              onMoveUp: onMoveQueueEntryUp,
+                              onMoveDown: onMoveQueueEntryDown,
+                            ),
+                            const SizedBox(height: 8),
+                          ],
+                        ],
+                      ],
+                    ),
                   ),
                 ),
               ],
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _QueuedDownloadRow extends StatelessWidget {
+  const _QueuedDownloadRow({
+    required this.entry,
+    required this.linkedTransfer,
+    required this.index,
+    required this.total,
+    required this.onPause,
+    required this.onResume,
+    required this.onRetry,
+    required this.onCancel,
+    required this.onRemove,
+    required this.onMoveUp,
+    required this.onMoveDown,
+  });
+
+  final DownloadQueueEntry entry;
+  final TransferEntry? linkedTransfer;
+  final int index;
+  final int total;
+  final void Function(String queueId) onPause;
+  final void Function(String queueId) onResume;
+  final void Function(String queueId) onRetry;
+  final void Function(String queueId) onCancel;
+  final void Function(String queueId) onRemove;
+  final void Function(String queueId) onMoveUp;
+  final void Function(String queueId) onMoveDown;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isReorderable =
+        entry.state == DownloadQueueState.queued ||
+        entry.state == DownloadQueueState.paused;
+    final isFinalState =
+        entry.state == DownloadQueueState.completed ||
+        entry.state == DownloadQueueState.failed ||
+        entry.state == DownloadQueueState.canceled ||
+        entry.state == DownloadQueueState.skipped;
+    final progress = linkedTransfer == null || linkedTransfer!.totalBytes <= 0
+        ? null
+        : (linkedTransfer!.transferredBytes / linkedTransfer!.totalBytes)
+              .clamp(0, 1)
+              .toDouble();
+    final stats = linkedTransfer == null
+        ? p.basename(entry.outputPath)
+        : '${_fmt(linkedTransfer!.transferredBytes)} / ${_fmt(linkedTransfer!.totalBytes)}';
+
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest.withValues(
+          alpha: 0.45,
+        ),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.download_for_offline_outlined, size: 16),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    p.basename(entry.item.rel),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  _downloadQueueStateLabel(entry.state),
+                  style: theme.textTheme.labelSmall,
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              '${entry.item.owner} -> ${entry.outputPath}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodySmall,
+            ),
+            if (entry.error != null && entry.error!.isNotEmpty) ...[
+              const SizedBox(height: 2),
+              Text(
+                'Error: ${entry.error}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.error,
+                ),
+              ),
+            ],
+            const SizedBox(height: 6),
+            LinearProgressIndicator(value: progress),
+            const SizedBox(height: 4),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    stats,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall,
+                  ),
+                ),
+                if (isReorderable) ...[
+                  IconButton(
+                    tooltip: 'Move up',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: index > 0 ? () => onMoveUp(entry.id) : null,
+                    icon: const Icon(Icons.arrow_upward, size: 15),
+                  ),
+                  IconButton(
+                    tooltip: 'Move down',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: index < total - 1
+                        ? () => onMoveDown(entry.id)
+                        : null,
+                    icon: const Icon(Icons.arrow_downward, size: 15),
+                  ),
+                ],
+                if (entry.state == DownloadQueueState.queued ||
+                    entry.state == DownloadQueueState.running)
+                  IconButton(
+                    tooltip: 'Pause',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () => onPause(entry.id),
+                    icon: const Icon(Icons.pause, size: 15),
+                  ),
+                if (entry.state == DownloadQueueState.paused)
+                  IconButton(
+                    tooltip: 'Resume',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () => onResume(entry.id),
+                    icon: const Icon(Icons.play_arrow, size: 15),
+                  ),
+                if (entry.state == DownloadQueueState.failed ||
+                    entry.state == DownloadQueueState.canceled ||
+                    entry.state == DownloadQueueState.skipped)
+                  IconButton(
+                    tooltip: 'Retry',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () => onRetry(entry.id),
+                    icon: const Icon(Icons.refresh, size: 15),
+                  ),
+                if (entry.state == DownloadQueueState.queued ||
+                    entry.state == DownloadQueueState.running ||
+                    entry.state == DownloadQueueState.paused)
+                  IconButton(
+                    tooltip: 'Cancel',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () => onCancel(entry.id),
+                    icon: const Icon(Icons.close, size: 15),
+                  ),
+                if (isFinalState)
+                  IconButton(
+                    tooltip: 'Remove from queue',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () => onRemove(entry.id),
+                    icon: const Icon(Icons.delete_outline, size: 15),
+                  ),
+              ],
+            ),
+          ],
         ),
       ),
     );
@@ -5946,6 +6438,25 @@ String _transferStateLabel(TransferState state) {
       return 'Failed';
     case TransferState.canceled:
       return 'Canceled';
+  }
+}
+
+String _downloadQueueStateLabel(DownloadQueueState state) {
+  switch (state) {
+    case DownloadQueueState.queued:
+      return 'Queued';
+    case DownloadQueueState.running:
+      return 'Running';
+    case DownloadQueueState.paused:
+      return 'Paused';
+    case DownloadQueueState.completed:
+      return 'Done';
+    case DownloadQueueState.failed:
+      return 'Failed';
+    case DownloadQueueState.canceled:
+      return 'Canceled';
+    case DownloadQueueState.skipped:
+      return 'Skipped';
   }
 }
 
@@ -7458,6 +7969,7 @@ class Controller extends ChangeNotifier {
     String outputPath, {
     bool allowOverwrite = false,
     DuplicateHandlingMode duplicateHandlingMode = DuplicateHandlingMode.rename,
+    void Function(String transferId)? onTransferStart,
   }) async {
     if (item.local) {
       throw Exception('Item is already local');
@@ -7493,7 +8005,10 @@ class Controller extends ChangeNotifier {
         item,
         sink,
         () => false,
-        onTransferStart: (id) => transferId = id,
+        onTransferStart: (id) {
+          transferId = id;
+          onTransferStart?.call(id);
+        },
       );
       await sink.flush();
       await sink.close();
@@ -10125,6 +10640,37 @@ PeerHealthSummary evaluatePeerHealth({
 enum TransferDirection { download, upload }
 
 enum TransferState { running, completed, failed, canceled }
+
+enum DownloadQueueState {
+  queued,
+  running,
+  paused,
+  completed,
+  failed,
+  canceled,
+  skipped,
+}
+
+class DownloadQueueEntry {
+  DownloadQueueEntry({
+    required this.id,
+    required this.item,
+    required this.outputPath,
+    required this.duplicateHandlingMode,
+    required this.createdAt,
+  });
+
+  final String id;
+  final ShareItem item;
+  final String outputPath;
+  final DuplicateHandlingMode duplicateHandlingMode;
+  final DateTime createdAt;
+  DateTime updatedAt = DateTime.now();
+  DownloadQueueState state = DownloadQueueState.queued;
+  String? error;
+  String? transferId;
+  int attempts = 0;
+}
 
 class TransferEntry {
   TransferEntry({
